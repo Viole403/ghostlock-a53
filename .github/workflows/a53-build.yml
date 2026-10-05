@@ -132,54 +132,54 @@ jobs:
           echo "default VA48 layout matches the baseline (no instruction-shape change)"
           grep -E '^(IDENTICAL|LAYOUT-SHIFT) ' cand.log || true
 
-      # _text is materialised as a movz/movk immediate chain, and the two layouts
-      # differ only in bits 16-31:
-      #     VA48  0xffffffc080000000  ->  imm16 = 0x8000 (32768)
-      #     VA39  0xffffffc008000000  ->  imm16 = 0x0800 (2048)
-      # Clang prints immediates in decimal and llvm-objdump in hex depending on
-      # the path, so both spellings are accepted. The check is differential:
-      # each marker must be present in its own build and absent from the other,
-      # so an incidental match elsewhere cannot satisfy it.
-      - name: A53 layout must actually be baked in
+      - name: Build both layouts
         env:
-          LLVM_OBJDUMP: ${{ runner.temp }}/ondk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objdump
           TMP: ${{ runner.temp }}
         run: |
           set -euo pipefail
           export ANDROID_NDK_HOME="$TMP/ondk"
           export NDK_ROOT="$ANDROID_NDK_HOME"
-
-          VA48_MARK='(#0x8000([^0-9a-fA-F]|$))|(#32768([^0-9]|$))'
-          VA39_MARK='(#0x800([^0-9a-fA-F]|$))|(#2048([^0-9]|$))'
-
+          # clean between builds: the objects differ only by the flag, and a
+          # stale object would silently carry the other layout.
+          make -C src clean
           make -C src ghostlock
           cp build/native/ghostlock "$TMP/default.ghostlock"
+          make -C src clean
           make -C src ghostlock EXTRA_CXXFLAGS=-DGHOSTLOCK_TARGET_A53_5_10
           cp build/native/ghostlock "$TMP/a53.ghostlock"
 
+      # A build that silently lost the flag would ship the VA48 layout while
+      # looking successful, so the flag's effect is verified in the binary.
+      #
+      # _text is materialised as a mov/movk chain. Matching a single 16-bit
+      # field is not enough -- an unrelated immediate matched #0x800 by chance
+      # in the default build -- so the disassembly is replayed to reconstruct
+      # whole 64-bit materialised constants and the exact _text value is looked
+      # up instead.
+      - name: Verify the A53 layout is baked into the binary
+        env:
+          LLVM_OBJDUMP: ${{ runner.temp }}/ondk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objdump
+          TMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
           "$LLVM_OBJDUMP" -d --no-show-raw-insn "$TMP/default.ghostlock" > "$TMP/default.asm"
           "$LLVM_OBJDUMP" -d --no-show-raw-insn "$TMP/a53.ghostlock" > "$TMP/a53.asm"
+          python3 tools/find_consts.py "$TMP/default.asm" | sort -u > "$TMP/default.consts"
+          python3 tools/find_consts.py "$TMP/a53.asm" | sort -u > "$TMP/a53.consts"
 
-          has() { grep -qE "$2" "$1"; }
-
-          has "$TMP/default.asm" "$VA48_MARK" \
-            || { echo "::error::default binary lacks the VA48 _text marker"; exit 1; }
-          if has "$TMP/default.asm" "$VA39_MARK"; then
-            echo "::error::default binary contains the VA39 marker; the two \
-          layouts are not actually distinguished by this constant"
-            exit 1
-          fi
-          has "$TMP/a53.asm" "$VA39_MARK" \
-            || { echo "::error::A53 binary lacks the VA39 _text marker -- \
+          grep -qx 0xffffffc080000000 "$TMP/default.consts" \
+            || { echo "::error::default binary lacks _text 0xffffffc080000000"; exit 1; }
+          grep -qx 0xffffffc008000000 "$TMP/a53.consts" \
+            || { echo "::error::A53 binary lacks _text 0xffffffc008000000 -- \
           GHOSTLOCK_TARGET_A53_5_10 did not take effect"; exit 1; }
-          if has "$TMP/a53.asm" "$VA48_MARK"; then
-            echo "::error::A53 binary still contains the VA48 marker"
+          if grep -qx 0xffffffc080000000 "$TMP/a53.consts"; then
+            echo "::error::A53 binary still carries the VA48 _text"
             exit 1
           fi
           cmp -s "$TMP/default.ghostlock" "$TMP/a53.ghostlock" \
             && { echo "::error::both layouts produced an identical binary"; exit 1; }
 
-          echo "VA48 marker in the default build only, VA39 marker in the A53 build only"
+          echo "VA48 _text in the default build only, VA39 _text in the A53 build only"
           echo "A53 native sha256: $(sha256sum "$TMP/a53.ghostlock" | cut -d' ' -f1)"
 
   apk:
