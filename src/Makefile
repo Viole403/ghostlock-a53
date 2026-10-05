@@ -59,6 +59,11 @@ HDRS := $(wildcard core/*.h core/*.hpp core/*/*.h core/*/*.hpp)
 # Device offsets are selected at runtime from uname -r.
 TARGET_CONFIG ?= kernel/target.h
 
+# Appended verbatim to every compile. Used to select a per-kernel-family
+# address layout, e.g.
+#   make -C src ghostlock API=34 EXTRA_CXXFLAGS=-DGHOSTLOCK_TARGET_A53_5_10
+EXTRA_CXXFLAGS ?=
+
 # Clang seeds its codegen randomness from the output path when
 # -frandom-seed is unset, so two builds of identical sources in different
 # directories produce different register allocation. That made the disassembly
@@ -70,7 +75,7 @@ COMMON_FLAGS := -O2 -flto -Wall -Wextra -Wconversion -Wsign-conversion \
   -frandom-seed=ghostlock-android12 \
   -Icore -DTARGET_CONFIG_H=\"$(TARGET_CONFIG)\"
 CFLAGS := $(COMMON_FLAGS) -std=gnu11
-CXXFLAGS := $(COMMON_FLAGS) -std=c++23 -fno-rtti
+CXXFLAGS := $(COMMON_FLAGS) $(EXTRA_CXXFLAGS) -std=c++23 -fno-rtti
 LDFLAGS := -fPIE -pie -pthread -flto -static-libstdc++
 
 HOST_CC ?= cc

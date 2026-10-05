@@ -5,6 +5,15 @@
 
 #include "kernel/offset.h"
 
+/* glibc's <bits/page_size.h> (NDK r27 and newer) defines PAGE_SIZE as a macro.
+ * Without this, any translation unit that pulls a libc header before this one
+ * turns the constant below into `inline constexpr 4096 = ...`, which is a hard
+ * compile error. The kernel-side constant is authoritative here; the libc macro
+ * is not used by this codebase. */
+#ifdef PAGE_SIZE
+#undef PAGE_SIZE
+#endif
+
 namespace ghostlock::kernel {
     inline constexpr unsigned PAGE_SHIFT = 12;
     inline constexpr unsigned long PAGE_SIZE = 1UL << PAGE_SHIFT;

@@ -8,6 +8,45 @@ using namespace ghostlock;
 #include <type_traits>
 
 
+/* Address layout is selected at build time by the family macro. The pins below
+ * are per-family: each branch asserts its own measured values, so a build can
+ * never pass with the wrong layout's constants. Payload offsets are family
+ * independent and stay unconditional. */
+#if defined(GHOSTLOCK_TARGET_A53_5_10)
+
+/* SM-A536E / A536EXXSMGZE2, CONFIG_ARM64_VA_BITS=39. _text is measured from the
+ * shipped boot image header; the direct map and its bounds are the tuned upper
+ * limits documented in kernel/target_constants.hpp. */
+static_assert(ghostlock::kernel::KIMAGE_TEXT_BASE == 0xffffffc008000000ULL);
+static_assert(ghostlock::kernel::P0_PAGE_OFFSET == 0xffffffc000000000ULL);
+static_assert(ghostlock::kernel::DIRECT_MAP_BASE == 0xffffffc000000000ULL);
+static_assert(ghostlock::kernel::DIRECT_MAP_END == 0xffffffd000000000ULL);
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_START == 0xffffffc000000000ULL);
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_END == 0xffffffc200000000ULL);
+static_assert(ghostlock::kernel::VMEMMAP_START == 0xffffffc800000000ULL);
+static_assert(ghostlock::kernel::P0_PHYS_OFFSET == 0x80000000ULL);
+
+/* The direct-map bound has to exceed real DRAM: apply_iomem_cache rejects any
+ * measured span >= DIRECT_MAP_END - DIRECT_MAP_BASE, so an undersized bound
+ * would silently discard a good iomem dump. 64 GiB clears any A53 config. */
+static_assert(ghostlock::kernel::DIRECT_MAP_END - ghostlock::kernel::DIRECT_MAP_BASE
+              == (1ULL << 36));
+/* KernelSnitch scans [IDENTITY_START, IDENTITY_END) and physmap_info sits in the
+ * low physical pages, so the window must be wide enough to contain it while
+ * staying strictly inside the direct map. */
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_END
+              - ghostlock::kernel::KERNELSNITCH_IDENTITY_START >= (1ULL << 30));
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_END
+              < ghostlock::kernel::DIRECT_MAP_END);
+/* The kernel image is mapped above the direct map, so its text base has to sit
+ * above PAGE_OFFSET and leave room for the whole image below the top of the
+ * address space. This is the invariant that would break if a layout mixed a
+ * VA_BITS=39 base with a VA_BITS=48 page offset. */
+static_assert(ghostlock::kernel::KIMAGE_TEXT_BASE > ghostlock::kernel::P0_PAGE_OFFSET);
+static_assert(ghostlock::kernel::KIMAGE_TEXT_BASE + (0x2370000ULL) > ghostlock::kernel::KIMAGE_TEXT_BASE);
+
+#else
+
 static_assert(ghostlock::kernel::KIMAGE_TEXT_BASE == 0xffffffc080000000ULL);
 static_assert(ghostlock::kernel::MTK_VADDR_BASE == 0xffffffc000000000ULL);
 static_assert(ghostlock::kernel::P0_PAGE_OFFSET == 0xffffff8000000000ULL);
@@ -17,6 +56,9 @@ static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_END == 0xffffff8c00000000
 static_assert(ghostlock::kernel::DIRECT_MAP_BASE == 0xffffff8000000000ULL);
 static_assert(ghostlock::kernel::DIRECT_MAP_END == 0xffffff9000000000ULL);
 static_assert(ghostlock::kernel::VMEMMAP_START == 0xfffffffe00000000ULL);
+
+#endif
+
 static_assert(ghostlock::kernel::LOCK_OFF == 0x0e80);
 static_assert(ghostlock::kernel::W0_OFF == 0x1180);
 static_assert(ghostlock::kernel::FOPS_OFF == 0x0f80);
