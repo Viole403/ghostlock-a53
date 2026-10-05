@@ -1,0 +1,63 @@
+GhostLock — Samsung Galaxy A53 5G (SM-A536E) port
+Copyright 2026 the GhostLock A53 port contributors
+
+This product includes software developed as a derivative of the projects
+listed below. All four are licensed under the Apache License, Version 2.0;
+the full license text is in LICENSE.
+
+--------------------------------------------------------------------------------
+1. snothin/ghostlock-s26
+   https://github.com/snothin/ghostlock-s26
+   Apache-2.0
+   Origin of the upstream GhostLock application, native exploit core, profile
+   format and release pipeline that this repository builds on.
+
+--------------------------------------------------------------------------------
+2. YuKongA/ghostlock-app
+   https://github.com/YuKongA/ghostlock-app
+   Apache-2.0
+   The GhostLock application tree this repository was forked from. Provides the
+   Android app, the HOCON kernel-profile system, the native make-based build and
+   the GitHub Actions release workflow.
+
+--------------------------------------------------------------------------------
+3. BuSung-dev/Root-My-Galaxy-Payloads
+   https://github.com/BuSung-dev/Root-My-Galaxy-Payloads
+   Apache-2.0
+   Reference for the Exynos 1280 / s5e8825 (SM-A536E) target. Supplies the
+   kernel offset methodology, the profile binary layout (GLK v2), and the
+   device-tested 5.10 / 5.15 task_struct and cred field sets used to validate
+   the A536EXXSMGZE2 profile in this repository.
+
+--------------------------------------------------------------------------------
+4. BuSung-dev/Root-My-Galaxy
+   https://github.com/BuSung-dev/Root-My-Galaxy
+   Apache-2.0
+   Underlying payload and route research for Galaxy root chains, referenced for
+   the select_stack wait/futex route geometry used by this port.
+
+--------------------------------------------------------------------------------
+Modifications in this repository
+--------------------------------------------------------------------------------
+- Added a Samsung Galaxy A53 5G (SM-A536E) target for firmware A536EXXSMGZE2,
+  kernel 5.10.237-android12-9-31999025-abA536EXXSMGZE2.
+- Added a build-time address-layout switch, GHOSTLOCK_TARGET_A53_5_10, selecting
+  the CONFIG_ARM64_VA_BITS=39 layout (_text = 0xffffffc008000000,
+  PAGE_OFFSET = 0xffffffc000000000) instead of the default VA_BITS=48 GKI
+  layout. The default layout is unchanged when the flag is not defined.
+- Added kernel_profiles/5.10-template.conf and the A536EXXSMGZE2 profile,
+  registered in kernel_profiles/index.conf.
+- Fixed a silent failure mode where profile address resolution threw without
+  logging, and a PAGE_SIZE redefinition collision with newer NDK libc headers.
+
+Apache License, Version 2.0
+---------------------------
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.
