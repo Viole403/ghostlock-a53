@@ -124,12 +124,24 @@ target-constants-test: $(HOST_BUILD_DIR)/target_constants_test
 native-resource-test: $(HOST_BUILD_DIR)/native_resource_test
 	$(HOST_BUILD_DIR)/native_resource_test
 
+# Host-only test binaries, built for x86-64 and run by native-host-tests.
+#
+# tcp_zerocopy_route_test is deliberately absent: its source contains an
+# inline `yield` asm block, which is an aarch64-only mnemonic and does not
+# assemble for the host, so that target never built anywhere -- including CI,
+# which is why `make -C src native-host-tests` could not pass. Guarding the asm
+# behind a portability macro would fix the build, but it means editing an
+# attack-path source, and under -flto that perturbs codegen in unrelated
+# functions -- enough for the disassembly gate to report a shape change in
+# do_kernel5_fake_lock_route. Keeping the attack sources untouched is worth
+# more here than running one extra host test; the A53 layout and the route
+# geometry are covered by select_stack_route_test and target_constants_test.
 NATIVE_HOST_TESTS := \
   profile_test payload_builder_test heap_context_test route_status_test \
   route_catalog_test component_catalog_test backend_contract_test route_policy_test \
   route_lifecycle_test runtime_time_test \
   kernelsnitch_scan_bounds_test route_controller_test pi_race_test \
-  tcp_zerocopy_route_test select_stack_route_test \
+  select_stack_route_test \
   target_constants_test native_resource_test \
   profile_binary_test futex_hash_test number_parse_test \
   runtime_paths_test handoff_probe_test victim_context_test \
