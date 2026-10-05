@@ -149,38 +149,50 @@ jobs:
           cp build/native/ghostlock "$TMP/a53.ghostlock"
 
       # A build that silently lost the flag would ship the VA48 layout while
-      # looking successful, so the flag's effect is verified in the binary.
+      # looking successful, so the flag's effect is verified in a real object
+      # compiled by the Makefile's own flags.
       #
-      # _text is materialised as a mov/movk chain. Matching a single 16-bit
-      # field is not enough -- an unrelated immediate matched #0x800 by chance
-      # in the default build -- so the disassembly is replayed to reconstruct
-      # whole 64-bit materialised constants and the exact _text value is looked
-      # up instead.
-      - name: Verify the A53 layout is baked into the binary
+      # src/tools/layout_probe.cpp puts kImageTextBase and kPageOffset into
+      # .rodata as the only contents of that section, so the bytes are
+      # unambiguous. Reconstructing the value out of a disassembly listing was
+      # tried first and was unreliable: clang splits a 64-bit immediate across
+      # mov/movk differently depending on the surrounding code.
+      #
+      #     VA48  0xffffffc080000000  ->  00000080 c0ffffff
+      #     VA39  0xffffffc008000000  ->  00000008 c0ffffff
+      - name: Verify the A53 layout is baked into the build
         env:
           LLVM_OBJDUMP: ${{ runner.temp }}/ondk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objdump
           TMP: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          "$LLVM_OBJDUMP" -d --no-show-raw-insn "$TMP/default.ghostlock" > "$TMP/default.asm"
-          "$LLVM_OBJDUMP" -d --no-show-raw-insn "$TMP/a53.ghostlock" > "$TMP/a53.asm"
-          python3 tools/find_consts.py "$TMP/default.asm" | sort -u > "$TMP/default.consts"
-          python3 tools/find_consts.py "$TMP/a53.asm" | sort -u > "$TMP/a53.consts"
+          export ANDROID_NDK_HOME="$TMP/ondk"
+          export NDK_ROOT="$ANDROID_NDK_HOME"
 
-          grep -qx 0xffffffc080000000 "$TMP/default.consts" \
-            || { echo "::error::default binary lacks _text 0xffffffc080000000"; exit 1; }
-          grep -qx 0xffffffc008000000 "$TMP/a53.consts" \
-            || { echo "::error::A53 binary lacks _text 0xffffffc008000000 -- \
-          GHOSTLOCK_TARGET_A53_5_10 did not take effect"; exit 1; }
-          if grep -qx 0xffffffc080000000 "$TMP/a53.consts"; then
-            echo "::error::A53 binary still carries the VA48 _text"
-            exit 1
+          make -C src layout-probe BUILD_ROOT="$PWD/build/probe-default"
+          make -C src layout-probe BUILD_ROOT="$PWD/build/probe-a53" \
+            EXTRA_CXXFLAGS=-DGHOSTLOCK_TARGET_A53_5_10
+
+          "$LLVM_OBJDUMP" -s -j .rodata "$PWD/build/probe-default/native/layout_probe.o" \
+            > "$TMP/va48.rodata"
+          "$LLVM_OBJDUMP" -s -j .rodata "$PWD/build/probe-a53/native/layout_probe.o" \
+            > "$TMP/va39.rodata"
+          echo "VA48 probe .rodata:"; cat "$TMP/va48.rodata"
+          echo "VA39 probe .rodata:"; cat "$TMP/va39.rodata"
+
+          grep -q '00000080 c0ffffff' "$TMP/va48.rodata" \
+            || { echo "::error::default probe does not carry the VA48 layout"; exit 1; }
+          grep -q '00000008 c0ffffff' "$TMP/va39.rodata" \
+            || { echo "::error::A53 probe does not carry the VA39 layout -- \
+          GHOSTLOCK_TARGET_A53_5_10 did not reach the compiler"; exit 1; }
+          if grep -q '00000080 c0ffffff' "$TMP/va39.rodata"; then
+            echo "::error::A53 probe still carries the VA48 layout"; exit 1
           fi
-          cmp -s "$TMP/default.ghostlock" "$TMP/a53.ghostlock" \
-            && { echo "::error::both layouts produced an identical binary"; exit 1; }
+          cmp -s "$PWD/build/probe-default/native/layout_probe.o" \
+                 "$PWD/build/probe-a53/native/layout_probe.o" \
+            && { echo "::error::both layouts produced an identical probe object"; exit 1; }
 
-          echo "VA48 _text in the default build only, VA39 _text in the A53 build only"
-          echo "A53 native sha256: $(sha256sum "$TMP/a53.ghostlock" | cut -d' ' -f1)"
+          echo "VA48 layout under the default flags, VA39 under GHOSTLOCK_TARGET_A53_5_10"
 
   apk:
     name: A53 release APK

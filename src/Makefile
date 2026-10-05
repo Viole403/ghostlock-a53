@@ -121,6 +121,19 @@ cpp-link-probe-test: $(HOST_BUILD_DIR)/cpp_link_probe_test
 target-constants-test: $(HOST_BUILD_DIR)/target_constants_test
 	$(HOST_BUILD_DIR)/target_constants_test
 
+# Compiles the layout probe for the selected address layout. The A53 build
+# gate uses it to prove GHOSTLOCK_TARGET_A53_5_10 reached the compiler:
+# the probe puts kImageTextBase and kPageOffset into .rodata as the only
+# contents of that section, so the bytes are unambiguous where a
+# disassembly listing is not. Pass a distinct BUILD_ROOT per layout.
+LAYOUT_PROBE_SRC := tools/layout_probe.cpp
+
+layout-probe: $(BUILD_ROOT)/native/layout_probe.o
+
+$(BUILD_ROOT)/native/layout_probe.o: $(LAYOUT_PROBE_SRC) $(HDRS)
+	@mkdir -p $(dir $@)
+	$(NDK_CXX) $(CXXFLAGS) -c $< -o $@
+
 native-resource-test: $(HOST_BUILD_DIR)/native_resource_test
 	$(HOST_BUILD_DIR)/native_resource_test
 
