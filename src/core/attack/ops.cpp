@@ -12,8 +12,6 @@
 #include "session/exploit_session.hpp"
 
 #include <algorithm>
-#include <cerrno>
-#include <cstring>
 #include <array>
 #include <string>
 #include <string_view>
@@ -68,15 +66,8 @@ namespace ghostlock::attack {
     /* Entries carry a phys load address only when measured; otherwise MTK uses
      * the DRAM base, xring its constant, qcom its GKI version. */
     void resolve_profile_addresses(void) {
-        if (session::g_exploit_session.addresses.init(&session::g_exploit_session.profile) != 0) {
-            /* Silent FatalError here made every address-resolution failure look
-             * like a no-op run. Name the errno so the failing precondition is
-             * visible in the device log. */
-            pr_error("resolve_profile_addresses failed errno=%d (%s); "
-                     "check init_cred presence and the address domains\n",
-                     errno, strerror(errno));
+        if (session::g_exploit_session.addresses.init(&session::g_exploit_session.profile) != 0)
             throw FatalError{};
-        }
         pr_info("soc: %s; kernel_phys_load=0x%llx\n",
                 session::g_exploit_session.addresses.soc_name(&session::g_exploit_session.profile),
                 (unsigned long long) session::g_exploit_session.addresses.phys_load());
