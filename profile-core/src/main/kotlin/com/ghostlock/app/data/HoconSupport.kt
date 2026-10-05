@@ -15,19 +15,43 @@ object HoconSupport {
         .setSyntax(ConfigSyntax.CONF)
         .setAllowMissing(false)
 
+    /*
+     * Fallback for a top-level array that is real JSON rather than HOCON. The
+     * offsets store keeps its entries in a JSON array, and HOCON's array
+     * grammar rejects that shape: a newline between elements makes it expect
+     * the ')' that closes a value concatenation, so a multi-line JSON array
+     * fails with "expecting a close parentheses" at the closing bracket.
+     *
+     * HOCON is a superset of JSON but not the other way round -- arrays of
+     * HOCON objects carry unquoted keys, which the JSON grammar rejects -- so
+     * the JSON grammar is only tried after the HOCON grammar has failed.
+     */
+    private val arrayParseOptions = ConfigParseOptions.defaults()
+        .setSyntax(ConfigSyntax.JSON)
+        .setAllowMissing(false)
+
     /**
-     * Parses an object document, or an array document wrapped so HOCON sees a
-     * value (the offsets store keeps its top-level array shape).
+     * Parses an object document, or an array document wrapped so the parser
+     * sees a value (the offsets store keeps its top-level array shape).
      */
     fun parseValue(text: String): Any? {
         val isArray = text.trimStart().startsWith("[")
-        val source = if (isArray) "value = $text" else text
-        val config = runCatching {
-            ConfigFactory.parseString(source, parseOptions).resolve()
-        }.getOrNull() ?: return null
-        val unwrapped = config.root().unwrapped()
-        val value = if (isArray) unwrapped["value"] else unwrapped
-        return normalize(value)
+        if (isArray) {
+            val source = "value = $text"
+            val asHocon = runCatching {
+                ConfigFactory.parseString(source, parseOptions).resolve().root().unwrapped()["value"]
+            }.getOrNull()
+            if (asHocon != null) return normalize(asHocon)
+            /* The `value = ...` wrapper is HOCON syntax and is not valid JSON,
+             * so the array is re-parsed on its own. */
+            return normalize(
+                runCatching { ConfigFactory.parseString(text, arrayParseOptions).resolve().root().unwrapped() }
+                    .getOrNull(),
+            )
+        }
+        val config = runCatching { ConfigFactory.parseString(text, parseOptions).resolve() }
+            .getOrNull() ?: return null
+        return normalize(config.root().unwrapped())
     }
 
     private fun normalize(value: Any?): Any? = when (value) {

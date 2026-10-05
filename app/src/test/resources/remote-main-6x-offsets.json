@@ -1728,6 +1728,9 @@
       "task_seccomp": 2304,
       "task_tasks": 1360,
       "task_tgid": 1588
+    }
+  },
+  {
     "release": "6.6.127-android15-8-gb947b5758b2a-ab15580855-4k",
     "pselect_waiter_shift": -2,
     "kernel_phys_load": 1074266112,

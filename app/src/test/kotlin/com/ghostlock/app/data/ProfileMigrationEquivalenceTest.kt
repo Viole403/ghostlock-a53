@@ -44,7 +44,10 @@ class ProfileMigrationEquivalenceTest {
                 .toSortedSet()
 
             assertEquals("fixture must cover every current 6.x builtin", current6x, legacyReleases)
-            assertEquals("remote/main fixture size", 53, legacyReleases.size)
+            // Canary: the fixture is a snapshot of remote main's 6.x profiles, so
+            // its size should only move when that snapshot is regenerated. 54 as of
+            // the 6.6.127 profile being added upstream; it was 53 before that.
+            assertEquals("remote/main fixture size", 54, legacyReleases.size)
 
             val pair = CpuPair(primary = 0, consumer = 1)
             for (release in legacyReleases) {
