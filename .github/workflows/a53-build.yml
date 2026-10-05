@@ -1,0 +1,235 @@
+name: A53 build
+
+# Builds the SM-A536E (Exynos 1280) artifact for A536EXXSMGZE2 / kernel
+# 5.10.237. The native core is compiled with GHOSTLOCK_TARGET_A53_5_10 so
+# the VA_BITS=39 layout is baked in; see src/core/kernel/target_constants.hpp.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ONDK_VERSION: r30.1
+  TARGET_KERNEL: 5.10.237-android12-9-31999025-abA536EXXSMGZE2
+  BASELINE_REF: fec639b140a0f0ec128194b0c7fe0db14c3e7edf
+
+jobs:
+  native-gate:
+    name: native gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Cache ONDK
+        id: ondk-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/ondk
+          key: ondk-${{ env.ONDK_VERSION }}-linux
+
+      - name: Install ONDK
+        if: steps.ondk-cache.outputs.cache-hit != 'true'
+        run: |
+          url="https://github.com/topjohnwu/ondk/releases/download/${ONDK_VERSION}/ondk-${ONDK_VERSION}-linux.tar.xz"
+          mkdir -p "${{ runner.temp }}/ondk"
+          curl -fL "$url" -o "${{ runner.temp }}/ondk.tar.xz"
+          tar -C "${{ runner.temp }}/ondk" --strip-components=1 -xf "${{ runner.temp }}/ondk.tar.xz"
+
+      - name: Host tests (default VA48 layout)
+        run: make -C src native-host-tests
+
+      - name: Host attack data-flow harness
+        run: |
+          make -C src host-attack-dataflow-test
+          ./build/host-test/host_attack_dataflow_test
+
+      # Both sides are built WITHOUT the A53 flag, so this compares the
+      # default VA48 layout only. The A53 constants live behind
+      # GHOSTLOCK_TARGET_A53_5_10 and must not leak into this path.
+      #
+      # Three kinds of output are tolerated, and nothing else:
+      #   * do_one_write may differ -- commit a9167ca adds an errno log on the
+      #     address-resolution failure path.
+      #   * a MISSING target is fine only when BOTH sides lack the symbol, which
+      #     means the tool never emitted it (the multicast workers are inlined
+      #     away at -flto). An asymmetric MISSING is a real regression.
+      #   * nothing else may move.
+      #
+      # cmp_disasm itself exits non-zero for MISSING, so the exit code is
+      # ignored and the log is classified here instead.
+      # Three builds, all at the SAME absolute path, one after the other:
+#
+#   baseline #1, baseline #2, candidate
+#
+# baseline #1 vs #2 is a self-comparison. If that is not clean the build is
+# not reproducible and cmp_disasm cannot be a hard gate on this target, so the
+# step reports that plainly instead of blaming the diff on the change under
+# test. baseline #1 vs candidate is then the real regression signal.
+      - name: Build baseline native binary twice, then the candidate
+        run: |
+          set -euo pipefail
+          wt="${{ runner.temp }}/wt"
+          export ANDROID_NDK_HOME="${{ runner.temp }}/ondk"
+          export NDK_ROOT="$ANDROID_NDK_HOME"
+          build_at() {           # build_at <rev> <outfile>
+            git worktree remove --force "$wt" 2>/dev/null || true
+            git worktree add "$wt" "$1"
+            make -C "$wt/src" ghostlock
+            cp "$wt/build/native/ghostlock" "$2"
+          }
+          build_at "$BASELINE_REF" "${{ runner.temp }}/baseline1.ghostlock"
+          build_at "$BASELINE_REF" "${{ runner.temp }}/baseline2.ghostlock"
+          build_at HEAD              "${{ runner.temp }}/candidate.ghostlock"
+          git worktree remove --force "$wt" 2>/dev/null || true
+
+      - name: cmp_disasm (default layout regression gate)
+        env:
+          LLVM_OBJDUMP: ${{ runner.temp }}/ondk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objdump
+          TMP: ${{ runner.temp }}
+        run: |
+          classify() {           # classify <base> <cand> <logname>
+            python3 tools/cmp_disasm.py "$1" "$2" | tee "$3.log" || true
+            local bad=0
+            # SHAPE-DIFF / DIFF means the instruction stream itself changed.
+            # Those are hard failures.
+            shape=$(grep -E '^(DIFF|SHAPE-DIFF) ' "$3.log" | grep -v 'do_one_write' || true)
+            asym=$(grep -E '^MISSING ' "$3.log" | grep -v 'base=False cur=False' || true)
+            [ -n "$shape" ] && { echo "shape-changed: $shape"; bad=1; }
+            [ -n "$asym" ]  && { echo "asymmetric-missing: $asym"; bad=1; }
+            # LAYOUT-SHIFT is the tool's own benign class: identical instruction
+            # shape, differing annotated absolute addresses only. The binaries
+            # are not byte-identical because the A53 work adds rodata, so
+            # addresses referenced by unrelated functions move. Reported as a
+            # warning rather than a failure -- instruction counts and shapes
+            # are checked by the classes above.
+            shift=$(grep -E '^LAYOUT-SHIFT ' "$3.log" || true)
+            [ -n "$shift" ] && echo "address-only shift (not a shape change): $shift"
+            return $bad
+          }
+
+          # Self-comparison first: is this build even reproducible?
+          if ! classify "$TMP/baseline1.ghostlock" "$TMP/baseline2.ghostlock" self; then
+            echo "::error::baseline does not reproduce against itself; \
+          cmp_disasm cannot gate this target"
+            echo "--- self-comparison detail ---"
+            grep -E '^(DIFF|SHAPE-DIFF|LAYOUT-SHIFT|MISSING) ' self.log || true
+            exit 1
+          fi
+          echo "baseline is reproducible against itself"
+
+          if ! classify "$TMP/baseline1.ghostlock" "$TMP/candidate.ghostlock" cand; then
+            echo "::error::default VA48 layout changed:"
+            grep -E '^(DIFF|SHAPE-DIFF|LAYOUT-SHIFT|MISSING) ' cand.log || true
+            exit 1
+          fi
+          echo "default VA48 layout matches the baseline (no instruction-shape change)"
+          grep -E '^(IDENTICAL|LAYOUT-SHIFT) ' cand.log || true
+
+      - name: A53 layout must actually be baked in
+        env:
+          LLVM_OBJDUMP: ${{ runner.temp }}/ondk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objdump
+        run: |
+          export ANDROID_NDK_HOME="${{ runner.temp }}/ondk"
+          export NDK_ROOT="$ANDROID_NDK_HOME"
+          make -C src ghostlock EXTRA_CXXFLAGS=-DGHOSTLOCK_TARGET_A53_5_10
+          cp build/native/ghostlock build/native/ghostlock-a53
+          # _text for this device; if this constant is absent the flag never
+          # reached the compiler and the APK would carry the VA48 layout.
+          if "$LLVM_OBJDUMP" -s build/native/ghostlock-a53 | grep -qi "ffffffc00800 0000"; then
+            echo "VA39 _text constant present in the A53 binary"
+          else
+            echo "::error::A53 build does not contain 0xffffffc008000000 -- GHOSTLOCK_TARGET_A53_5_10 did not take effect"
+            exit 1
+          fi
+
+  apk:
+    name: A53 release APK
+    needs: native-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache ONDK
+        id: ondk-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/ondk
+          key: ondk-${{ env.ONDK_VERSION }}-linux
+
+      - name: Install ONDK
+        if: steps.ondk-cache.outputs.cache-hit != 'true'
+        run: |
+          url="https://github.com/topjohnwu/ondk/releases/download/${ONDK_VERSION}/ondk-${ONDK_VERSION}-linux.tar.xz"
+          mkdir -p "${{ runner.temp }}/ondk"
+          curl -fL "$url" -o "${{ runner.temp }}/ondk.tar.xz"
+          tar -C "${{ runner.temp }}/ondk" --strip-components=1 -xf "${{ runner.temp }}/ondk.tar.xz"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest :profile-core:test --no-daemon
+
+      - name: Build native binary for A53
+        run: |
+          export ANDROID_NDK_HOME="${{ runner.temp }}/ondk"
+          export NDK_ROOT="$ANDROID_NDK_HOME"
+          make -C src ghostlock EXTRA_CXXFLAGS=-DGHOSTLOCK_TARGET_A53_5_10
+          "${{ runner.temp }}/ondk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all build/native/ghostlock
+
+      # `secrets` is not available in a step-level `if:`, so gate on a
+      # boolean copied into the environment first. With no secrets the
+      # keystore step is skipped and Gradle falls back to the debug key.
+      - name: Detect signing secrets
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: echo "HAS_SIGNING_KEY=$([ -n "$SIGNING_KEY" ] && echo true || echo false)" >> "$GITHUB_ENV"
+
+      - name: Restore release keystore
+        if: env.HAS_SIGNING_KEY == 'true'
+        run: |
+          echo "${{ secrets.SIGNING_KEY }}" | base64 -d > keystore.jks
+          echo "KEYSTORE_PATH=$PWD/keystore.jks" >> "$GITHUB_ENV"
+          echo "KEYSTORE_PASS=${{ secrets.KEY_STORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=${{ secrets.ALIAS }}" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> "$GITHUB_ENV"
+
+      - name: Report signing mode
+        run: |
+          if [ "${HAS_SIGNING_KEY:-false}" = "true" ] && [ -f keystore.jks ]; then
+            echo "release keystore present; APK will be signed"
+          else
+            echo "::warning::no SIGNING_KEY secret; falling back to the debug key"
+          fi
+
+      - name: Build APK
+        env:
+          ANDROID_NDK_HOME: ${{ runner.temp }}/ondk
+          NDK_ROOT: ${{ runner.temp }}/ondk
+          ONDK_HOME: ${{ runner.temp }}/ondk
+        run: ./gradlew :app:assembleRelease --no-daemon
+
+      - name: Assemble artifacts
+        run: |
+          mkdir -p dist
+          cp build/native/ghostlock dist/ghostlock-a53
+          cp build/app/outputs/apk/release/*.apk "dist/GhostLock-A53-${TARGET_KERNEL}.apk"
+          sha256sum dist/* | tee dist/SHA256SUMS
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostlock-a53-apk
+          path: dist/
