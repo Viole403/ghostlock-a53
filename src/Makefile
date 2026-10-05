@@ -59,8 +59,15 @@ HDRS := $(wildcard core/*.h core/*.hpp core/*/*.h core/*/*.hpp)
 # Device offsets are selected at runtime from uname -r.
 TARGET_CONFIG ?= kernel/target.h
 
+# Clang seeds its codegen randomness from the output path when
+# -frandom-seed is unset, so two builds of identical sources in different
+# directories produce different register allocation. That made the disassembly
+# comparison report a flaky SHAPE-DIFF in do_kernel5_fake_lock_route across
+# runs of one commit. Pinning the seed makes the binary reproducible, which is
+# what the gate needs to mean anything and gives release builds a stable hash.
 COMMON_FLAGS := -O2 -flto -Wall -Wextra -Wconversion -Wsign-conversion \
   -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function \
+  -frandom-seed=ghostlock-android12 \
   -Icore -DTARGET_CONFIG_H=\"$(TARGET_CONFIG)\"
 CFLAGS := $(COMMON_FLAGS) -std=gnu11
 CXXFLAGS := $(COMMON_FLAGS) -std=c++23 -fno-rtti
