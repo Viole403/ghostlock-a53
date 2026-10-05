@@ -128,11 +128,17 @@ target-constants-test: $(HOST_BUILD_DIR)/target_constants_test
 # disassembly listing is not. Pass a distinct BUILD_ROOT per layout.
 LAYOUT_PROBE_SRC := tools/layout_probe.cpp
 
+# -flto is dropped here on purpose: -flto -c emits LLVM bitcode, which
+# llvm-objdump cannot read as an object file. The probe only has to pin down
+# which constant the header selects, and link-time optimisation has no say in
+# that.
+LAYOUT_PROBE_FLAGS := $(filter-out -flto,$(CXXFLAGS))
+
 layout-probe: $(BUILD_ROOT)/native/layout_probe.o
 
 $(BUILD_ROOT)/native/layout_probe.o: $(LAYOUT_PROBE_SRC) $(HDRS)
 	@mkdir -p $(dir $@)
-	$(NDK_CXX) $(CXXFLAGS) -c $< -o $@
+	$(NDK_CXX) $(LAYOUT_PROBE_FLAGS) -c $< -o $@
 
 native-resource-test: $(HOST_BUILD_DIR)/native_resource_test
 	$(HOST_BUILD_DIR)/native_resource_test
