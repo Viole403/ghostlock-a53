@@ -66,17 +66,28 @@ TARGETS = [
         "do_one_write(ghostlock::memory::WriteRequest const*, char const*)",
         "do_one_write(ghostlock::WriteRequest const*, char const*)",
     ]),
-    ("multicast_owner_worker", [
-        "ghostlock::route::multicast_waiter::(anonymous namespace)::multicast_owner_worker(void*)",
-        "ghostlock::route::multicast_owner_worker(void*)",
-        "(anonymous namespace)::multicast_owner_worker(void*)",
-        "multicast_owner_worker(void*)",
+    # The multicast route's W2 fast-repair hooks. These replace the previous
+    # multicast_owner_worker / multicast_waiter_worker entries, which named
+    # symbols that no longer exist: git grep finds neither in the tree, and
+    # docs/analysis/kernel-phys-offset-plan.md already recorded them as not
+    # instantiated. They could only ever report MISSING, which counted as a
+    # failure while checking nothing.
+    #
+    # These hooks are the better target anyway. They are the declared
+    # middleware boundary, marked [[gnu::noinline]] precisely so LTO does not
+    # fold the route body into the attack functions, so they exist in the
+    # binary and gating them actually covers the multicast route.
+    ("multicast_w2_prebuild", [
+        "ghostlock::route::MulticastPolicy::w2_fast_repair_prebuild(ghostlock::session::ExploitSession&)",
+        "MulticastPolicy::w2_fast_repair_prebuild(ghostlock::session::ExploitSession&)",
+        "w2_fast_repair_prebuild(ghostlock::session::ExploitSession&)",
+        "w2_fast_repair_prebuild(ghostlock::ExploitSession&)",
     ]),
-    ("multicast_waiter_worker", [
-        "ghostlock::route::multicast_waiter::(anonymous namespace)::multicast_waiter_worker(void*)",
-        "ghostlock::route::multicast_waiter_worker(void*)",
-        "(anonymous namespace)::multicast_waiter_worker(void*)",
-        "multicast_waiter_worker(void*)",
+    ("multicast_w2_activate", [
+        "ghostlock::route::MulticastPolicy::w2_fast_repair_activate(ghostlock::session::ExploitSession&)",
+        "MulticastPolicy::w2_fast_repair_activate(ghostlock::session::ExploitSession&)",
+        "w2_fast_repair_activate(ghostlock::session::ExploitSession&)",
+        "w2_fast_repair_activate(ghostlock::ExploitSession&)",
     ]),
 ]
 

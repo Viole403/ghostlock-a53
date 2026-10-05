@@ -59,7 +59,7 @@ python3 tools/cmp_disasm.py <baseline-binary> build/native/ghostlock
    规范中的"明确保留"清单。
 4. **Verify**：按级别跑满 §1.3 门槛并保留证据；汇报时给出命令与结果，不写"应该没问题"。
 
-- 攻击路径改动 = `cmp_disasm`（8 函数）+ 真机门禁 + 门禁记录（格式见
+- 攻击路径改动 = `cmp_disasm`（8 目标）+ 真机门禁 + 门禁记录（格式见
   `docs/development/documentation-standards.md`），缺一不可。
 - 大改动按批次推进，一个批次只做一类事，上一批验证通过再进下一批。
 
@@ -105,7 +105,9 @@ python3 tools/cmp_disasm.py <baseline-binary> build/native/ghostlock
 
 - 普通改动：`make -C src native-host-tests` + NDK 构建零警告 + `make -C src lint-tidy`。
 - 攻击关键路径（waiter/race/payload/route/exec 流程）改动：
-  1. `tools/cmp_disasm.py` 对比 8 个攻击函数，要求 IDENTICAL (strict) 或已复核的注解差异；
+  1. `tools/cmp_disasm.py` 对比 8 个目标函数，要求 IDENTICAL (strict) 或已复核的注解差异；
+     其中 multicast 一对是 `MulticastPolicy::w2_fast_repair_prebuild` / `w2_fast_repair_activate`
+     （即 noinline 的 middleware 边界），不是已不存在的 `multicast_*_worker`；
   2. 真机门禁（冷机、固定 CPU 对、单 route、KernelSU 未加载的干净启动）；
   3. 日志在设备 `Download/ghostlock-debug-log/<时间>/*.log.txt`（同目录另有
      `profile.conf`/`profile.bin`，记录本次生效配置与送入 native 的 GLK1 字节），确认 route 命中与写验证通过。
