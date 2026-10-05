@@ -259,6 +259,16 @@ jobs:
             echo "::warning::no SIGNING_KEY secret; falling back to the debug key"
           fi
 
+      # buildGhostlockExtract shells out to `cargo +ondk`, so the ONDK rust
+      # toolchain has to be linked into rustup before Gradle runs. ONDK_HOME is
+      # set below, which is also what makes the build take the ondk path.
+      - name: Link the ONDK rust toolchain
+        env:
+          ONDK_HOME: ${{ runner.temp }}/ondk
+        run: |
+          rustup toolchain link ondk "$ONDK_HOME/toolchains/rust"
+          rustup default stable
+
       - name: Build APK
         env:
           ANDROID_NDK_HOME: ${{ runner.temp }}/ondk
