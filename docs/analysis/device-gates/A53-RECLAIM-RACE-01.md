@@ -43,14 +43,34 @@ request and the page stores an even byte over `selinux_state.initialized`.
    drained, so an 8 MiB send parks in `sock_wait_for_wmem` forever.
    Measured: 0% CPU, 1 thread, `wchan=sock_wait_for_wmem`.
 
-## Address layout — config.gz is wrong on this device
+## Address layout — our rebase was wrong, the device config was right
 
-`/proc/config.gz` reports `CONFIG_ARM64_VA_BITS=39`, which implies a page offset
-of `0xffffffc000000000`. The run that achieved root resolved mm_struct slabs at
-`0xffffff80...` / `0xffffff88...` and wrote through them, so the running kernel
-uses the VA48-style linear map. Confirmed independently by
-`Meowkis/ghostlock-samsung-research/src/offsets/5.10.h`, a different 39-bit-VA
-5.10 device that agrees exactly:
+The physmap windows were previously rebased onto `0xffffffc000000000`, on the
+assumption that `CONFIG_ARM64_VA_BITS=39` moves the linear map to the same place
+the kernel image lives. It does not. From this kernel's own
+`arch/arm64/include/asm/memory.h`:
+
+```c
+#define _PAGE_OFFSET(va)    (-(UL(1) << (va)))
+#define PAGE_OFFSET         (_PAGE_OFFSET(VA_BITS))
+```
+
+| VA_BITS | PAGE_OFFSET |
+| --- | --- |
+| 39 | `0xffffff8000000000` |
+| 48 | `0xffff000000000000` |
+
+So `CONFIG_ARM64_VA_BITS=39` — which the device config states — predicts
+`0xffffff8000000000` exactly, and the run that achieved root resolved slabs at
+`0xffffff80...` / `0xffffff88...` and wrote through them. The kernel image is a
+separate mapping near `KIMAGE_VADDR`, which is where `_text =
+0xffffffc008000000` lives. **The config was correct; the rebase was the bug.**
+
+This also corrects an earlier note in this repository that blamed
+`/proc/config.gz` for describing a different kernel. It does not. The mistake was
+conflating the image VA with the linear map. The resulting constants are
+independently corroborated by `Meowkis/ghostlock-samsung-research/src/offsets/5.10.h`
+(a different 39-bit-VA 5.10 device):
 
 ```
 P0_PAGE_OFFSET              0xffffff8000000000
@@ -59,9 +79,8 @@ KIMAGE_TEXT_BASE            0xffffffc008000000   (identical to ours)
 PSELECT_WAITER_WORD_SHIFT   0
 ```
 
-The kernel image base was already correct; only the physmap family was wrong.
-Scanning the rebased windows points at unmapped memory, so no slab could ever
-match.
+Scanning the old rebased windows pointed at unmapped memory, so no slab could
+match — which is the same failure mode as the single-scan path, just earlier.
 
 ## Race — FAIL, localised
 

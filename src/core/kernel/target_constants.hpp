@@ -31,18 +31,20 @@ namespace ghostlock::target {
 
         /* _text measured from the shipped boot image header, not assumed. */
         inline constexpr std::uintptr_t kImageTextBase = 0xffffffc008000000ULL;
-        /* Physmap family, taken from the layout that actually rooted this
-         * device (see docs/analysis/device-gates/ROOT-A536EXXSMGZE2-01.md).
+        /* Physmap family.
          *
-         * These were previously rebased onto a VA_BITS=39 page offset of
-         * 0xffffffc000000000, inferred from /proc/config.gz. That inference is
-         * wrong: the working run resolved mm_struct slabs at 0xffffff80......
-         * and 0xffffff88...... on this exact hardware and wrote through them
-         * successfully. Samsung ships a config.gz that does not match the
-         * running kernel build, so the device uses the VA48-style linear map
-         * at 0xffffff8000000000 while the kernel image still sits at
-         * 0xffffffc000000000. Trusting config.gz over the observed run
-         * pointed every scan at unmapped memory. */
+         * arm64 computes the linear map as _PAGE_OFFSET(va) = -(1UL << va)
+         * (arch/arm64/include/asm/memory.h), so CONFIG_ARM64_VA_BITS=39 --
+         * which is what this device's config says -- puts PAGE_OFFSET at
+         * 0xffffff8000000000. The kernel *image* is mapped separately, near
+         * KIMAGE_VADDR, which is why _text above sits at 0xffffffc008000000.
+         *
+         * These constants were previously rebased onto the image address
+         * (0xffffffc000000000) on the assumption that VA_BITS=39 moved the
+         * linear map there too. It does not: the two mappings are unrelated,
+         * and every scan window landed on unmapped memory. Both windows below
+         * are 2 GiB / 512 GiB, matching the layout that resolved and reclaimed
+         * mm_struct slabs on this hardware. */
         inline constexpr std::uintptr_t kPageOffset = 0xffffff8000000000ULL;
         inline constexpr std::uintptr_t kDirectMapBase = 0xffffff8000000000ULL;
         /* Upper bound only. apply_iomem_cache narrows this from a rooted

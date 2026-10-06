@@ -15,10 +15,11 @@ using namespace ghostlock;
 #if defined(GHOSTLOCK_TARGET_A53_5_10)
 
 /* SM-A536E / A536EXXSMGZE2. _text is measured from the shipped boot image
- * header. The physmap family is the layout that actually rooted this device:
- * the run resolved mm_struct slabs at 0xffffff80.../0xffffff88... and wrote
- * through them, so /proc/config.gz's CONFIG_ARM64_VA_BITS=39 claim does not
- * describe the running kernel. See kernel/target_constants.hpp. */
+ * header. The physmap family follows from CONFIG_ARM64_VA_BITS=39 via
+ * _PAGE_OFFSET(va) = -(1UL << va) = 0xffffff8000000000; the kernel image is
+ * mapped separately at KIMAGE_VADDR, which is what _text lives under. Both
+ * agree with the mm_struct slab addresses observed on the device.
+ * See kernel/target_constants.hpp. */
 static_assert(ghostlock::kernel::KIMAGE_TEXT_BASE == 0xffffffc008000000ULL);
 static_assert(ghostlock::kernel::P0_PAGE_OFFSET == 0xffffff8000000000ULL);
 static_assert(ghostlock::kernel::DIRECT_MAP_BASE == 0xffffff8000000000ULL);
