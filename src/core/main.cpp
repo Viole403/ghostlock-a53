@@ -26,6 +26,13 @@ using namespace ghostlock;
 
 
 int main(int argc, char **argv) {
+    /* Line-buffer stdout for the whole run. Redirected to a file, stdout is
+     * block-buffered by default, so a kernel panic discards the last partial
+     * buffer -- which is exactly the window a crash happens in. timer_mark
+     * already fsyncs at stage boundaries, but only for its own lines; without
+     * this the per-attempt lines inside a route are lost exactly when they are
+     * needed. */
+    setvbuf(stdout, nullptr, _IOLBF, 0);
     try {
         profile::kernel_offsets decoded = {};
         std::array<char, 256> release_buf{};

