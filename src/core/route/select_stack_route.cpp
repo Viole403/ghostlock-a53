@@ -450,7 +450,9 @@ namespace ghostlock::route::select_stack {
             pr_info("pselect pre-select attempt=%d/%d compact=%d +%.0fms\n",
                     attempt, attempts, layout.compact_waiter.value_or(0),
                     route::fops_elapsed_ms(&route_t0));
+#if defined(GHOSTLOCK_DIAG)
         support::log_sync();
+#endif
             errno = 0;
             if (layout.compact_waiter.value_or(0)) {
                 uint32_t timeout_us = profile.select_timeout_us();
@@ -476,7 +478,9 @@ namespace ghostlock::route::select_stack {
             pr_info("pselect post-select attempt=%d/%d compact=%d +%.0fms ret=%d\n",
                     attempt, attempts, layout.compact_waiter.value_or(0),
                     route::fops_elapsed_ms(&route_t0), select_result);
+#if defined(GHOSTLOCK_DIAG)
         support::log_sync();
+#endif
             race->consumer_go.store(0);
 
             const int32_t calls = race->consumer_calls.load();

@@ -26,13 +26,13 @@ using namespace ghostlock;
 
 
 int main(int argc, char **argv) {
-    /* Line-buffer stdout for the whole run. Redirected to a file, stdout is
-     * block-buffered by default, so a kernel panic discards the last partial
-     * buffer -- which is exactly the window a crash happens in. timer_mark
-     * already fsyncs at stage boundaries, but only for its own lines; without
-     * this the per-attempt lines inside a route are lost exactly when they are
-     * needed. */
+#if defined(GHOSTLOCK_DIAG)
+    /* Diagnostic builds only. Line-buffer stdout so a device reboot cannot
+     * discard the last partial buffer. Under LTO this shifts every function in
+     * the binary, so it must not be on for a shipped attack path -- build with
+     * -DGHOSTLOCK_DIAG when the log is the thing being debugged. */
     setvbuf(stdout, nullptr, _IOLBF, 0);
+#endif
     try {
         profile::kernel_offsets decoded = {};
         std::array<char, 256> release_buf{};

