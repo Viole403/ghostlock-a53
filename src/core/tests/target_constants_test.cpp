@@ -22,7 +22,7 @@ static_assert(ghostlock::kernel::P0_PAGE_OFFSET == 0xffffffc000000000ULL);
 static_assert(ghostlock::kernel::DIRECT_MAP_BASE == 0xffffffc000000000ULL);
 static_assert(ghostlock::kernel::DIRECT_MAP_END == 0xffffffd000000000ULL);
 static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_START == 0xffffffc000000000ULL);
-static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_END == 0xffffffc200000000ULL);
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_END == 0xffffffc080000000ULL);
 static_assert(ghostlock::kernel::VMEMMAP_START == 0xffffffc800000000ULL);
 static_assert(ghostlock::kernel::P0_PHYS_OFFSET == 0x80000000ULL);
 
@@ -31,13 +31,37 @@ static_assert(ghostlock::kernel::P0_PHYS_OFFSET == 0x80000000ULL);
  * would silently discard a good iomem dump. 64 GiB clears any A53 config. */
 static_assert(ghostlock::kernel::DIRECT_MAP_END - ghostlock::kernel::DIRECT_MAP_BASE
               == (1ULL << 36));
-/* KernelSnitch scans [IDENTITY_START, IDENTITY_END) and physmap_info sits in the
- * low physical pages, so the window must be wide enough to contain it while
- * staying strictly inside the direct map. */
-static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_END
-              - ghostlock::kernel::KERNELSNITCH_IDENTITY_START >= (1ULL << 30));
-static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_END
+/* physmap_info is reached through two aliases on this SoC, so the scan needs
+ * both. The low window sits at the page offset; the high one is 512 GiB above
+ * it. Getting this wrong is not a perf issue: with only the low window the scan
+ * never finds the mm_struct pointers and heap preparation fails every attempt,
+ * and a single range spanning both would sweep 512 GiB of unrelated memory. */
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOW_COUNT == 2);
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[0].start
+              == 0xffffffc000000000ULL);
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[0].end
+              == 0xffffffc080000000ULL);
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[1].start
+              == 0xffffffc800000000ULL);
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[1].end
+              == 0xffffffc880000000ULL);
+/* Each window must be non-empty, stay inside the direct map, and be wide enough
+ * to contain physmap_info. */
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[0].end
+              > ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[0].start);
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[1].end
+              > ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[1].start);
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[1].end
               < ghostlock::kernel::DIRECT_MAP_END);
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[0].end
+              - ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[0].start
+              >= (1ULL << 30));
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[1].end
+              - ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[1].start
+              >= (1ULL << 30));
+/* The windows must not overlap, or the scan would redo work. */
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[1].start
+              >= ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[0].end);
 /* The kernel image is mapped above the direct map, so its text base has to sit
  * above PAGE_OFFSET and leave room for the whole image below the top of the
  * address space. This is the invariant that would break if a layout mixed a

