@@ -28,6 +28,24 @@ namespace ghostlock::kernel {
 
     inline constexpr unsigned long ORDER3_SIZE = PAGE_SIZE << MM_ORDER;
 
+    /* Reclaim driver geometry for the mm_struct group hunt.
+     *
+     * PAGE_SCAN_MAX caps how many times the group hunt re-runs before giving
+     * up. DMA32_SKIP_SLABS is how many slab-batches of references are held
+     * when a DMA32 candidate appears -- on this device DMA32 does not reclaim
+     * into the SKB path reliably, so candidates there are held and discarded
+     * rather than used. TRIGGER_SLABS is the drain pressure applied before the
+     * target slab's tail is released: without that pressure the slab is not
+     * actually freed and the scan has nothing to find.
+     *
+     * Declared unconditionally so support/a53_reclaim.cpp compiles on every
+     * target; only the A53 build ever calls it.
+     *
+     * See docs/development/a53-reclaim-port-plan.md. */
+    inline constexpr unsigned long A53_PAGE_SCAN_MAX = 256;
+    inline constexpr unsigned long A53_DMA32_SKIP_SLABS = 8;
+    inline constexpr unsigned long A53_TRIGGER_SLABS = 24;
+
 #if defined(GHOSTLOCK_TARGET_A53_5_10)
     /* Exynos 1280 only reclaims the mm_struct slab once the socket buffer
      * spans enough order-3 slabs to cover it, and the reclaim loop has to run

