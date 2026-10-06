@@ -14,16 +14,18 @@ using namespace ghostlock;
  * independent and stay unconditional. */
 #if defined(GHOSTLOCK_TARGET_A53_5_10)
 
-/* SM-A536E / A536EXXSMGZE2, CONFIG_ARM64_VA_BITS=39. _text is measured from the
- * shipped boot image header; the direct map and its bounds are the tuned upper
- * limits documented in kernel/target_constants.hpp. */
+/* SM-A536E / A536EXXSMGZE2. _text is measured from the shipped boot image
+ * header. The physmap family is the layout that actually rooted this device:
+ * the run resolved mm_struct slabs at 0xffffff80.../0xffffff88... and wrote
+ * through them, so /proc/config.gz's CONFIG_ARM64_VA_BITS=39 claim does not
+ * describe the running kernel. See kernel/target_constants.hpp. */
 static_assert(ghostlock::kernel::KIMAGE_TEXT_BASE == 0xffffffc008000000ULL);
-static_assert(ghostlock::kernel::P0_PAGE_OFFSET == 0xffffffc000000000ULL);
-static_assert(ghostlock::kernel::DIRECT_MAP_BASE == 0xffffffc000000000ULL);
-static_assert(ghostlock::kernel::DIRECT_MAP_END == 0xffffffd000000000ULL);
-static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_START == 0xffffffc000000000ULL);
-static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_END == 0xffffffc080000000ULL);
-static_assert(ghostlock::kernel::VMEMMAP_START == 0xffffffc800000000ULL);
+static_assert(ghostlock::kernel::P0_PAGE_OFFSET == 0xffffff8000000000ULL);
+static_assert(ghostlock::kernel::DIRECT_MAP_BASE == 0xffffff8000000000ULL);
+static_assert(ghostlock::kernel::DIRECT_MAP_END == 0xffffff9000000000ULL);
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_START == 0xffffff8000000000ULL);
+static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_END == 0xffffff8080000000ULL);
+static_assert(ghostlock::kernel::VMEMMAP_START == 0xffffff7ff0000000ULL);
 static_assert(ghostlock::kernel::P0_PHYS_OFFSET == 0x80000000ULL);
 
 /* The direct-map bound has to exceed real DRAM: apply_iomem_cache rejects any
@@ -38,13 +40,13 @@ static_assert(ghostlock::kernel::DIRECT_MAP_END - ghostlock::kernel::DIRECT_MAP_
  * and a single range spanning both would sweep 512 GiB of unrelated memory. */
 static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOW_COUNT == 2);
 static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[0].start
-              == 0xffffffc000000000ULL);
+              == 0xffffff8000000000ULL);
 static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[0].end
-              == 0xffffffc080000000ULL);
+              == 0xffffff8080000000ULL);
 static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[1].start
-              == 0xffffffc800000000ULL);
+              == 0xffffff8800000000ULL);
 static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[1].end
-              == 0xffffffc880000000ULL);
+              == 0xffffff8980000000ULL);
 /* Each window must be non-empty, stay inside the direct map, and be wide enough
  * to contain physmap_info. */
 static_assert(ghostlock::kernel::KERNELSNITCH_IDENTITY_WINDOWS[0].end
